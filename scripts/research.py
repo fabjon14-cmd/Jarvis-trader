@@ -3,6 +3,7 @@
 import os
 import requests
 import json
+from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
 
@@ -23,12 +24,22 @@ def _headers():
 
 
 def get_bars(symbol, timeframe="1Day", limit=60):
-    """Fetch historical price bars for a symbol."""
+    """Fetch historical price bars for a symbol.
+
+    Alpaca returns null bars if start/end are omitted, so we always send an
+    explicit range wide enough to cover `limit` bars (accounting for weekends/
+    holidays) and let `limit` truncate the actual result.
+    """
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(days=max(limit * 2, 30))
     url = f"https://data.alpaca.markets/v2/stocks/{symbol}/bars"
     params = {
         "timeframe": timeframe,
         "limit": limit,
-        "adjustment": "raw"
+        "adjustment": "raw",
+        "feed": "iex",
+        "start": start.strftime("%Y-%m-%d"),
+        "end": end.strftime("%Y-%m-%d"),
     }
     response = requests.get(url, headers=_headers(), params=params, timeout=REQUEST_TIMEOUT)
     response.raise_for_status()

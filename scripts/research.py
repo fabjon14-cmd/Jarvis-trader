@@ -24,11 +24,15 @@ def _headers():
 
 
 def get_bars(symbol, timeframe="1Day", limit=60):
-    """Fetch historical price bars for a symbol.
+    """Fetch the most recent `limit` historical price bars for a symbol.
 
     Alpaca returns null bars if start/end are omitted, so we always send an
     explicit range wide enough to cover `limit` bars (accounting for weekends/
-    holidays) and let `limit` truncate the actual result.
+    holidays). Within that range Alpaca returns oldest-first by default, so a
+    wide range plus `limit` truncates from the oldest end, not the most recent
+    one — we request sort=desc (most recent first) and then reverse the
+    result back to chronological order so callers get the most recent `limit`
+    bars, oldest to newest.
     """
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=max(limit * 2, 30))
@@ -38,12 +42,16 @@ def get_bars(symbol, timeframe="1Day", limit=60):
         "limit": limit,
         "adjustment": "raw",
         "feed": "iex",
+        "sort": "desc",
         "start": start.strftime("%Y-%m-%d"),
         "end": end.strftime("%Y-%m-%d"),
     }
     response = requests.get(url, headers=_headers(), params=params, timeout=REQUEST_TIMEOUT)
     response.raise_for_status()
-    return response.json()
+    data = response.json()
+    if data.get("bars"):
+        data["bars"] = list(reversed(data["bars"]))
+    return data
 
 
 def get_account():

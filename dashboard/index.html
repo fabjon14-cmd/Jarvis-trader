@@ -1,10 +1,9 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<title>J.A.R.V.I.S. // LIVE OPS</title>
+<meta charset="utf-8" />
+<title>J.A.R.V.I.S. // OPS COMMAND</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <style>
   :root{
     --bg: #070b11;
@@ -21,16 +20,29 @@
     --crit: #ff4d5e;
     --good: #35e28a;
     --font-display: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
+    --font-data: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
     --font-body: ui-sans-serif, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   }
-  *{ box-sizing: border-box; }
+  *{ box-sizing:border-box; }
   html,body{ margin:0; padding:0; }
   body{
     background: var(--bg);
     color: var(--ink);
-    font-family: var(--font-display);
+    font-family: var(--font-data);
     font-variant-numeric: tabular-nums;
-    min-height: 100vh;
+  }
+  ::selection{ background: var(--accent-2); color:#03131a; }
+  a{ color:var(--accent); }
+  button{ font-family:inherit; }
+
+  .hud{
+    min-height:100vh;
+    display:flex;
+    flex-direction:column;
+    background:
+      radial-gradient(1200px 480px at 50% -10%, rgba(47,215,255,0.07), transparent 60%),
+      repeating-linear-gradient(0deg, rgba(255,255,255,0.012) 0px, rgba(255,255,255,0.012) 1px, transparent 1px, transparent 3px),
+      var(--bg);
   }
 
   .topbar{
@@ -38,202 +50,796 @@
     padding: 16px 28px;
     border-bottom: 1px solid var(--line);
     background: linear-gradient(180deg, rgba(47,215,255,0.05), transparent);
+    flex-wrap: wrap; gap: 10px;
   }
-  .mark{
-    font-weight:700; font-size:19px; letter-spacing:0.2em;
+  .brand{ display:flex; align-items:baseline; gap:10px; }
+  .brand .mark{
+    font-family: var(--font-display); font-weight:700; font-size: 19px;
+    letter-spacing: 0.22em; color: var(--ink);
     text-shadow: 0 0 18px rgba(47,215,255,0.35);
   }
-  .mark span{ color: var(--accent); }
-  .status{ display:flex; align-items:center; gap:18px; font-size:12px; color:var(--muted); letter-spacing:0.05em; }
-  .dot{ width:8px; height:8px; border-radius:50%; display:inline-block; margin-right:6px; background:var(--good); }
-  .dot.stale{ background:var(--warn); }
-  .dot.error{ background:var(--crit); }
-  @keyframes pulse{ 0%{opacity:1;} 50%{opacity:0.4;} 100%{opacity:1;} }
-  .dot.live{ animation:pulse 2s infinite; }
-
-  .grid{
-    display:grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 20px;
-    padding: 22px 28px;
-    align-items: start;
+  .brand .mark span{ color: var(--accent); }
+  .brand .sub{ font-size:11px; letter-spacing:0.14em; color: var(--muted); text-transform:uppercase; }
+  .top-right{ display:flex; align-items:center; gap:16px; font-size:12px; color: var(--muted); letter-spacing:0.08em; flex-wrap:wrap; }
+  .pulse-dot{
+    width:8px; height:8px; border-radius:50%; background: var(--good);
+    box-shadow: 0 0 0 0 rgba(53,226,138,0.6); animation: pulse 2.4s infinite;
+    display:inline-block; margin-right:6px; vertical-align:middle;
   }
-  @media (max-width: 1100px){ .grid{ grid-template-columns: 1fr; } }
-
-  .panel{
-    position:relative;
-    background: var(--panel);
-    border: 1px solid var(--line);
-    padding: 18px;
-    min-height: 200px;
+  .pulse-dot.error{ background: var(--crit); animation:none; }
+  @keyframes pulse{
+    0%{ box-shadow:0 0 0 0 rgba(53,226,138,0.55); }
+    70%{ box-shadow:0 0 0 7px rgba(53,226,138,0); }
+    100%{ box-shadow:0 0 0 0 rgba(53,226,138,0); }
   }
-  .cnr{ position:absolute; width:12px; height:12px; }
-  .cnr.tl{ top:-1px; left:-1px; border-top:2px solid var(--accent); border-left:2px solid var(--accent); }
-  .cnr.tr{ top:-1px; right:-1px; border-top:2px solid var(--accent); border-right:2px solid var(--accent); }
-  .cnr.bl{ bottom:-1px; left:-1px; border-bottom:2px solid var(--accent); border-left:2px solid var(--accent); }
-  .cnr.br{ bottom:-1px; right:-1px; border-bottom:2px solid var(--accent); border-right:2px solid var(--accent); }
-
-  .panel-head{
-    display:flex; align-items:baseline; justify-content:space-between;
-    margin-bottom:14px; padding-bottom:10px; border-bottom:1px solid var(--line-soft);
+  #clock{ color: var(--ink); }
+  .icon-btn{
+    background:transparent; border:1px solid var(--line); color:var(--muted);
+    font-family: var(--font-display); font-size:11px; letter-spacing:0.08em; text-transform:uppercase;
+    padding:6px 10px; cursor:pointer;
   }
-  .panel-title{ font-weight:700; font-size:12px; letter-spacing:0.16em; }
-  .panel-title::before{ content:"// "; color: var(--accent); }
-  .panel-date{ font-size:11px; color:var(--muted); }
+  .icon-btn:hover{ color:var(--accent); border-color:var(--accent-2); }
 
-  .content{
-    font-family: var(--font-body);
-    font-size: 13px;
-    line-height: 1.55;
-    color: var(--ink);
-    max-height: 65vh;
-    overflow-y: auto;
+  .searchwrap{ position:relative; }
+  #searchInput{
+    background: var(--panel-2); border:1px solid var(--line); color:var(--ink);
+    font-family: var(--font-data); font-size:12px; padding:6px 10px; width:220px;
   }
-  .content::-webkit-scrollbar{ width:8px; }
-  .content::-webkit-scrollbar-thumb{ background: var(--line); }
-  .content h1{ font-family: var(--font-display); font-size:15px; letter-spacing:0.05em; color:var(--accent); margin: 0 0 10px; }
-  .content h2{ font-family: var(--font-display); font-size:12px; letter-spacing:0.1em; text-transform:uppercase; color:var(--ink); border-bottom:1px solid var(--line-soft); padding-bottom:6px; margin: 18px 0 10px; }
-  .content h2:first-child{ margin-top:0; }
-  .content p{ margin: 0 0 10px; color: var(--muted); }
-  .content strong{ color: var(--ink); }
-  .content code{ font-family: var(--font-display); background: var(--panel-2); padding: 1px 5px; font-size:12px; color: var(--accent); }
-  .content ul, .content ol{ margin: 0 0 10px; padding-left: 20px; color: var(--muted); }
-  .content li{ margin-bottom: 4px; }
-  .content .empty{ color: var(--dim); font-style: italic; }
-
-  .footer{
-    padding: 14px 28px; border-top:1px solid var(--line);
-    font-size:11px; color:var(--dim); letter-spacing:0.05em;
+  #searchInput:focus-visible{ outline:2px solid var(--accent); border-color:var(--accent-2); }
+  #searchResults{
+    position:absolute; top:calc(100% + 6px); right:0; width:340px; max-height:320px; overflow-y:auto;
+    background: var(--panel); border:1px solid var(--line); z-index:30; display:none;
+    box-shadow: 0 12px 30px rgba(0,0,0,0.5);
   }
+  #searchResults.open{ display:block; }
+  .sr-item{ padding:10px 12px; border-bottom:1px solid var(--line-soft); font-size:11.5px; cursor:pointer; }
+  .sr-item:last-child{ border-bottom:none; }
+  .sr-item:hover{ background: var(--panel-2); }
+  .sr-item .sr-date{ color:var(--accent); font-family:var(--font-display); font-size:10.5px; letter-spacing:0.05em; }
+  .sr-item .sr-snip{ color:var(--muted); font-family:var(--font-body); margin-top:3px; line-height:1.4; }
+  .sr-item mark{ background: rgba(47,215,255,0.25); color:var(--ink); }
 
+  /* ---------- agent status strip ---------- */
   .agents{
     display:grid;
     grid-template-columns: repeat(5, 1fr);
     gap: 14px;
     padding: 22px 28px 0;
   }
-  @media (max-width: 1100px){ .agents{ grid-template-columns: repeat(2, 1fr); } }
-  .agent-card{
-    background: var(--panel-2);
-    border: 1px solid var(--line-soft);
-    padding: 12px 14px;
+  @media (max-width: 1180px){ .agents{ grid-template-columns: repeat(2, 1fr); } }
+  .agent-card{ background: var(--panel-2); border: 1px solid var(--line-soft); padding: 12px 14px; }
+  .agent-card-name{ font-family: var(--font-display); font-size:11.5px; font-weight:700; letter-spacing:0.04em; margin-bottom:8px; }
+  .agent-card-row{ display:flex; justify-content:space-between; font-size:10.5px; color:var(--muted); margin-top:4px; }
+  .agent-card-row b{ color: var(--ink); font-weight:600; font-family: var(--font-data); }
+  .agent-card-state{ display:flex; align-items:center; font-size:10px; letter-spacing:0.08em; text-transform:uppercase; }
+  .agent-card-state .dot{ background: var(--good); }
+  .agent-card-state.disabled{ color: var(--dim); }
+  .agent-card-state.disabled .dot{ background: var(--dim); }
+
+  .main-grid{
+    flex:1; display:grid; grid-template-columns: 340px 1fr 340px; gap: 20px;
+    padding: 22px 28px; align-items:start;
   }
-  .agent-name{ font-size:11.5px; font-weight:700; letter-spacing:0.04em; margin-bottom:8px; }
-  .agent-row{ display:flex; justify-content:space-between; font-size:10.5px; color:var(--muted); margin-top:4px; }
-  .agent-row b{ color: var(--ink); font-weight:600; }
-  .agent-state{ display:flex; align-items:center; font-size:10px; letter-spacing:0.08em; text-transform:uppercase; }
-  .agent-state .dot{ background: var(--good); }
-  .agent-state.disabled .dot{ background: var(--dim); }
-  .agent-state.disabled{ color: var(--dim); }
+  @media (max-width: 1020px){ .main-grid{ grid-template-columns: 1fr; } }
+
+  .panel{ position:relative; background: var(--panel); border: 1px solid var(--line); padding: 18px 18px 16px; }
+  .cnr{ position:absolute; width:12px; height:12px; pointer-events:none; }
+  .cnr.tl{ top:-1px; left:-1px; border-top:2px solid var(--accent); border-left:2px solid var(--accent); }
+  .cnr.tr{ top:-1px; right:-1px; border-top:2px solid var(--accent); border-right:2px solid var(--accent); }
+  .cnr.bl{ bottom:-1px; left:-1px; border-bottom:2px solid var(--accent); border-left:2px solid var(--accent); }
+  .cnr.br{ bottom:-1px; right:-1px; border-bottom:2px solid var(--accent); border-right:2px solid var(--accent); }
+
+  .panel-head{
+    display:flex; align-items:center; justify-content:space-between;
+    margin-bottom: 14px; padding-bottom: 10px; border-bottom: 1px solid var(--line-soft);
+    flex-wrap: wrap; gap:8px;
+  }
+  .panel-title{ font-family: var(--font-display); font-weight:700; font-size: 12px; letter-spacing: 0.18em; color: var(--ink); }
+  .panel-title::before{ content:"// "; color: var(--accent); }
+  .panel-count{ font-size: 11px; color: var(--muted); letter-spacing:0.06em; text-align:right; }
+
+  .daytabs{ display:flex; gap:6px; margin-bottom:14px; flex-wrap:wrap; }
+  .daytab{
+    font-family: var(--font-display); font-size:11px; letter-spacing:0.06em;
+    padding:6px 10px; border:1px solid var(--line); background:transparent; color:var(--muted); cursor:pointer;
+  }
+  .daytab:hover{ color:var(--ink); border-color:var(--accent-2); }
+  .daytab.active{ color:var(--accent); border-color:var(--accent); background: rgba(47,215,255,0.08); }
+  .daytab .lbl{ font-size:9px; display:block; color:var(--dim); letter-spacing:0.08em; margin-top:2px; }
+
+  .mission{ padding: 11px 0; border-bottom: 1px solid var(--line-soft); cursor:pointer; }
+  .mission:last-child{ border-bottom:none; padding-bottom:2px; }
+  .mission:hover .mission-name{ color:var(--accent); }
+  .mission-top{ display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:5px; }
+  .mission-name{ font-family: var(--font-display); font-size: 12.5px; font-weight:700; letter-spacing: 0.04em; }
+  .tag{ font-size:9.5px; letter-spacing:0.12em; padding: 2px 6px; border:1px solid; text-transform:uppercase; white-space:nowrap; }
+  .tag.buy{ color:var(--good); border-color: rgba(53,226,138,0.4); background: rgba(53,226,138,0.08); }
+  .tag.sell{ color:var(--crit); border-color: rgba(255,77,94,0.4); background: rgba(255,77,94,0.08); }
+  .tag.hold{ color:var(--warn); border-color: rgba(255,176,32,0.4); background: rgba(255,176,32,0.08); }
+  .tag.neutral{ color:var(--muted); border-color: rgba(111,143,166,0.35); background: rgba(111,143,166,0.06); }
+  .mission-desc{ font-family: var(--font-body); font-size: 12px; color: var(--muted); margin: 0; line-height:1.4; max-height: 3.6em; overflow:hidden; }
+  .mission.expanded .mission-desc{ max-height:none; }
+  .empty-state{ font-family: var(--font-body); font-size:12px; color: var(--dim); padding: 6px 0 2px; }
+
+  .core-wrap{ display:flex; flex-direction:column; gap:16px; }
+  .radar-frame{ background: var(--panel-2); border: 1px solid var(--line-soft); padding: 12px 4px; display:flex; justify-content:center; }
+  #radar{ margin:0; color: var(--accent); text-shadow: 0 0 6px rgba(47,215,255,0.45); font-size: 13px; line-height: 1.12; white-space: pre; }
+  .readouts{ display:flex; justify-content:space-between; font-size:10.5px; letter-spacing:0.08em; color: var(--muted); padding: 8px 4px 0; flex-wrap:wrap; gap:6px; }
+  .readouts b{ color: var(--ink); font-weight:600; }
+
+  .matrix{ width:100%; border-collapse: collapse; font-size:11px; }
+  .matrix th{ text-align:left; font-family:var(--font-display); font-weight:700; letter-spacing:0.06em; color:var(--muted); padding:5px 6px; border-bottom:1px solid var(--line-soft); }
+  .matrix td{ padding:5px 6px; border-bottom:1px solid var(--line-soft); }
+  .matrix tr:last-child td{ border-bottom:none; }
+  .matrix .sym{ font-family:var(--font-display); font-weight:700; }
+  .cell-tag{ font-size:9px; letter-spacing:0.08em; padding:2px 5px; border:1px solid; text-transform:uppercase; cursor:pointer; display:inline-block; }
+  .cell-tag.buy{ color:var(--good); border-color: rgba(53,226,138,0.4); background: rgba(53,226,138,0.08); }
+  .cell-tag.sell{ color:var(--crit); border-color: rgba(255,77,94,0.4); background: rgba(255,77,94,0.08); }
+  .cell-tag.hold{ color:var(--warn); border-color: rgba(255,176,32,0.4); background: rgba(255,176,32,0.08); }
+  .cell-tag.na{ color:var(--dim); border-color: var(--line-soft); background:transparent; cursor:default; }
+
+  .rule-body{ font-family: var(--font-body); font-size: 12.5px; line-height:1.5; color: var(--ink); }
+  .violation{ border: 1px solid rgba(255,176,32,0.35); background: rgba(255,176,32,0.06); padding: 10px 12px; margin-bottom: 8px; font-size:12px; }
+  .violation:last-child{ margin-bottom:0; }
+  .violation b{ color: var(--warn); }
+  .clean-note{ border: 1px solid rgba(53,226,138,0.35); background: rgba(53,226,138,0.06); padding: 10px 12px; font-size:12px; color: var(--good); }
+  .review-meta{ font-size:10.5px; color:var(--dim); letter-spacing:0.05em; margin-top:10px; }
+  .link-btn{ background:none; border:none; color:var(--accent); font-family:var(--font-data); font-size:11px; cursor:pointer; padding:0; margin-top:8px; text-decoration:underline; }
+
+  .agent-glyph{ width:52px; height:52px; font-size:16px; flex:none; border:1px solid var(--accent-2); display:flex; align-items:center; justify-content:center; font-family:var(--font-display); font-weight:700; color:var(--accent); background: var(--panel-2); box-shadow: 0 0 16px rgba(47,215,255,0.18) inset; }
+  .agent-name{ font-family:var(--font-display); font-size:17px; font-weight:700; letter-spacing:0.08em; }
+  .dot{ width:7px; height:7px; border-radius:50%; display:inline-block; margin-right:5px; }
+  .dot.active{ background:var(--good); box-shadow:0 0 6px rgba(53,226,138,0.7); }
+  .status-label{ font-size:9.5px; letter-spacing:0.1em; color:var(--muted); text-transform:uppercase; }
+  .agent-role{ font-family:var(--font-body); font-size:12px; color:var(--muted); margin:4px 0 6px; }
+  .hero{ display:flex; align-items:center; gap:14px; padding-bottom:16px; border-bottom:1px solid var(--line-soft); margin-bottom:16px; }
+  .hero-body{ min-width:0; }
+  .stat-grid{ display:grid; grid-template-columns: 1fr 1fr; gap:14px; margin-bottom:18px; }
+  .stat{ display:flex; flex-direction:column; gap:3px; padding:10px 12px; background: var(--panel-2); border:1px solid var(--line-soft); }
+  .stat-label{ font-size:9.5px; letter-spacing:0.1em; color:var(--muted); text-transform:uppercase; }
+  .stat-value{ font-family:var(--font-display); font-size:16px; font-weight:700; color:var(--ink); }
+  .stat-value.good{ color: var(--good); }
+  .stat-value.crit{ color: var(--crit); }
+  .stat-sub{ font-size:10px; color:var(--dim); }
+  .positions-head{ font-size:10.5px; letter-spacing:0.12em; text-transform:uppercase; color:var(--muted); margin-bottom:8px; }
+  .position{ padding:8px 0; border-bottom:1px solid var(--line-soft); font-size:12px; cursor:pointer; }
+  .position:last-child{ border-bottom:none; padding-bottom:0; }
+  .position-top{ display:flex; align-items:baseline; justify-content:space-between; gap:8px; }
+  .pos-ticker{ font-family:var(--font-display); font-weight:700; letter-spacing:0.04em; }
+  .pos-meta{ font-family:var(--font-body); color:var(--muted); flex:1; }
+  .pos-status{ font-family:var(--font-data); font-weight:600; text-align:right; white-space:nowrap; }
+  .pos-status.good{ color:var(--good); }
+  .pos-status.warn{ color:var(--warn); }
+  .pos-status.crit{ color:var(--crit); }
+  .pos-history{ margin-top:6px; border-left:2px solid var(--line-soft); padding-left:10px; font-family:var(--font-body); color:var(--dim); font-size:10.5px; line-height:1.5; display:none; }
+  .position.expanded .pos-history{ display:block; }
+
+  .statusbar{
+    display:flex; align-items:center; justify-content:space-between; padding: 14px 28px;
+    border-top:1px solid var(--line); background: linear-gradient(0deg, rgba(47,215,255,0.04), transparent);
+    flex-wrap:wrap; gap:14px;
+  }
+  .meters{ display:flex; gap:26px; flex-wrap:wrap; }
+  .meter{ display:flex; flex-direction:column; gap:5px; width:170px; }
+  .meter-label{ font-size:9.5px; letter-spacing:0.12em; color:var(--muted); text-transform:uppercase; }
+  .meter-value{ font-size:11px; color:var(--ink); }
+  .actions{ display:flex; gap:10px; }
+  .btn{
+    font-family: var(--font-display); font-size:11px; letter-spacing:0.1em; text-transform:uppercase;
+    background:transparent; color: var(--ink); border: 1px solid var(--line); padding: 8px 14px; cursor:pointer;
+    transition: border-color .2s, color .2s, background .2s;
+  }
+  .btn:hover, .btn:focus-visible{ border-color: var(--accent-2); color: var(--accent); background: rgba(47,215,255,0.06); }
+  .btn:focus-visible{ outline: 2px solid var(--accent); outline-offset:2px; }
+
+  .modal-overlay{ position:fixed; inset:0; background: rgba(3,7,11,0.78); display:flex; align-items:center; justify-content:center; z-index: 50; padding: 20px; }
+  .modal-overlay.hidden{ display:none; }
+  .modal-box{ width: 100%; max-width: 620px; max-height: 82vh; overflow-y:auto; }
+  .modal-box .mission-desc{ max-height:none; }
+  .raw-md{ font-family: var(--font-body); font-size:12.5px; line-height:1.6; color:var(--ink); }
+  .raw-md h2,.raw-md h3,.raw-md h4{ font-family:var(--font-display); color:var(--accent); letter-spacing:0.04em; margin: 16px 0 6px; }
+  .raw-md h2:first-child,.raw-md h3:first-child,.raw-md h4:first-child{ margin-top:0; }
+  .raw-md ul{ margin:6px 0; padding-left:20px; }
+  .raw-md li{ margin-bottom:4px; }
+  .raw-md code{ background: var(--panel-2); border:1px solid var(--line-soft); padding:1px 5px; font-family:var(--font-data); font-size:11.5px; }
+  .raw-md strong{ color: var(--ink); }
+  .modal-close{ position:sticky; top:0; float:right; }
+
+  @media (prefers-reduced-motion: reduce){ .pulse-dot{ animation:none; } }
 </style>
 </head>
 <body>
+
+<div class="hud">
   <header class="topbar">
-    <div class="mark">J.A.R.V.I.S<span>.</span> LIVE OPS</div>
-    <div class="status">
-      <span><span class="dot live" id="statusDot"></span><span id="statusText">Connecting…</span></span>
-      <span id="clock">--:--:--</span>
+    <div class="brand">
+      <div class="mark">J.A.R.V.I.S<span>.</span> OPS</div>
+      <div class="sub">Autonomous Paper-Trading Desk</div>
+    </div>
+    <div class="top-right">
+      <div><span class="pulse-dot" id="statusDot"></span><span id="statusText">Connecting…</span></div>
+      <div id="clock">00:00:00</div>
+      <div class="searchwrap">
+        <input id="searchInput" type="text" placeholder="Search entries…" autocomplete="off" />
+        <div id="searchResults"></div>
+      </div>
+      <button class="icon-btn" id="aboutBtn">About this data</button>
     </div>
   </header>
 
   <div class="agents" id="agentCards"></div>
 
-  <main class="grid">
-    <section class="panel">
+  <main class="main-grid">
+
+    <!-- DECISIONS -->
+    <section class="panel decisions">
       <i class="cnr tl"></i><i class="cnr tr"></i><i class="cnr bl"></i><i class="cnr br"></i>
       <div class="panel-head">
-        <span class="panel-title">Latest Journal</span>
-        <span class="panel-date" id="journalDate">—</span>
+        <span class="panel-title">Trading Session</span>
+        <span class="panel-count" id="decisionsCount">—</span>
       </div>
-      <div class="content" id="journalContent"><p class="empty">Loading…</p></div>
+      <div class="daytabs" id="dayTabs"></div>
+      <div id="decisionsList"></div>
     </section>
 
-    <section class="panel">
-      <i class="cnr tl"></i><i class="cnr tr"></i><i class="cnr bl"></i><i class="cnr br"></i>
-      <div class="panel-head">
-        <span class="panel-title">Latest Weekly Review</span>
-        <span class="panel-date" id="reviewDate">—</span>
+    <!-- CORE -->
+    <section class="core-wrap">
+      <div class="panel">
+        <i class="cnr tl"></i><i class="cnr tr"></i><i class="cnr bl"></i><i class="cnr br"></i>
+        <div class="panel-head">
+          <span class="panel-title">System Scan</span>
+          <span class="panel-count">DECORATIVE</span>
+        </div>
+        <div class="radar-frame"><pre id="radar"></pre></div>
+        <div class="readouts">
+          <span>SOURCE <b>claude/trading-journal</b></span>
+          <span>LAST FETCH <b id="builtAt">—</b></span>
+        </div>
       </div>
-      <div class="content" id="reviewContent"><p class="empty">Loading…</p></div>
+
+      <div class="panel">
+        <i class="cnr tl"></i><i class="cnr tr"></i><i class="cnr bl"></i><i class="cnr br"></i>
+        <div class="panel-head">
+          <span class="panel-title">Symbol Matrix — All Days</span>
+          <span class="panel-count">Click a tag</span>
+        </div>
+        <table class="matrix" id="matrixTable"></table>
+      </div>
+
+      <div class="panel">
+        <i class="cnr tl"></i><i class="cnr tr"></i><i class="cnr bl"></i><i class="cnr br"></i>
+        <div class="panel-head">
+          <span class="panel-title">Rule Adherence — Latest Review</span>
+          <span class="panel-count" id="reviewDate">—</span>
+        </div>
+        <div id="reviewBody" class="rule-body"></div>
+      </div>
     </section>
 
-    <section class="panel">
+    <!-- AGENT -->
+    <section class="panel agent-focus">
       <i class="cnr tl"></i><i class="cnr tr"></i><i class="cnr bl"></i><i class="cnr br"></i>
       <div class="panel-head">
-        <span class="panel-title">Latest Watchlist Scout</span>
-        <span class="panel-date" id="scoutDate">—</span>
+        <span class="panel-title">Agent: Trader</span>
+        <span class="panel-count" id="entriesLoadedCount">—</span>
       </div>
-      <div class="content" id="scoutContent"><p class="empty">Loading…</p></div>
+
+      <div class="hero">
+        <div class="agent-glyph">TR</div>
+        <div class="hero-body">
+          <div class="agent-name">TRADER</div>
+          <p class="agent-role">Equities execution agent</p>
+          <span class="status-label"><span class="dot active"></span>Live view</span>
+        </div>
+      </div>
+
+      <div class="stat-grid">
+        <div class="stat">
+          <span class="stat-label">Latest Entry</span>
+          <span class="stat-value" id="statEntry">—</span>
+          <span class="stat-sub" id="statEntrySub">—</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Latest Decisions</span>
+          <span class="stat-value" id="statDecisions">—</span>
+          <span class="stat-sub">from Trading Session</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Open Orders</span>
+          <span class="stat-value" id="statOrders">—</span>
+          <span class="stat-sub" id="statOrdersSub">—</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Rule Violations</span>
+          <span class="stat-value" id="statViolations">—</span>
+          <span class="stat-sub" id="statViolationsSub">—</span>
+        </div>
+      </div>
+
+      <div class="positions">
+        <div class="positions-head">Orders (click to expand history)</div>
+        <div id="ordersList"></div>
+      </div>
     </section>
+
   </main>
 
-  <footer class="footer">
-    Pulls live from github.com/fabjon14-cmd/Jarvis-trader (claude/trading-journal) every 30s via this machine's `gh` CLI auth.
+  <footer class="statusbar">
+    <div class="meters">
+      <div class="meter"><span class="meter-label">Entries Loaded</span><span class="meter-value" id="entriesVal">—</span></div>
+      <div class="meter"><span class="meter-label">Date Range</span><span class="meter-value" id="rangeVal">—</span></div>
+      <div class="meter"><span class="meter-label">Mode</span><span class="meter-value">Live (auto-refresh 30s)</span></div>
+    </div>
+    <div class="actions">
+      <button class="btn" id="refreshNowBtn">Refresh Now</button>
+    </div>
   </footer>
+</div>
+
+<!-- generic modal for full entry / review / order history -->
+<div class="modal-overlay hidden" id="modal">
+  <div class="modal-box panel">
+    <i class="cnr tl"></i><i class="cnr tr"></i><i class="cnr bl"></i><i class="cnr br"></i>
+    <button class="btn modal-close" id="modalClose">Close</button>
+    <div class="panel-head"><span class="panel-title" id="modalTitle">Entry</span></div>
+    <div id="modalBody" class="raw-md"></div>
+  </div>
+</div>
 
 <script>
-function tick(){
-  document.getElementById('clock').textContent = new Date().toLocaleTimeString('en-US', { hour12:false });
-}
-tick();
-setInterval(tick, 1000);
+(function(){
 
-function fmtTime(iso){
-  if (!iso) return '—';
-  const d = new Date(iso);
-  if (isNaN(d)) return '—';
-  return d.toLocaleString('en-US', { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit', hour12:false });
-}
+  var SYMBOLS = ['NVDA','AAPL','MSFT','AMD','TSLA'];
+  var currentDayIndex = 0; // 0 = most recent
+  var processed = [];
+  var reviewsProcessed = [];
+  var allDocs = [];
 
-function renderAgents(routines){
-  const container = document.getElementById('agentCards');
-  if (!routines || !routines.length){
-    container.innerHTML = '<p class="empty" style="padding:0 14px;">Agent status unavailable.</p>';
-    return;
+  /* ================= clock + radar (decorative) ================= */
+  var clockEl = document.getElementById('clock');
+  function tickClock(){ clockEl.textContent = new Date().toLocaleTimeString('en-US',{hour12:false}); }
+  tickClock(); setInterval(tickClock, 1000);
+
+  var reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var radarEl = document.getElementById('radar');
+  var COLS=31, ROWS=15, CX=15, CY=7, MAXR=7;
+  function buildFrame(angle){
+    var out='';
+    for (var j=0;j<ROWS;j++){
+      var row='';
+      for (var i=0;i<COLS;i++){
+        var dx=i-CX, dy=(j-CY)*2, dist=Math.sqrt(dx*dx+dy*dy), ch=' ';
+        if (Math.abs(dist-MAXR)<0.6 || Math.abs(dist-4.5)<0.5 || Math.abs(dist-2)<0.5) ch='·';
+        if (j===CY) ch=(i===CX)?'+':'—';
+        if (i===CX) ch=(j===CY)?'+':'¦';
+        if (dist<=MAXR+0.5){
+          var ang=Math.atan2(-dy,dx)*180/Math.PI; if (ang<0) ang+=360;
+          var diff=(angle-ang+360)%360;
+          if (diff<26){ ch = diff<6?'█':diff<14?'▓':diff<20?'░':ch; }
+        }
+        row+=ch;
+      }
+      out+=row+'\n';
+    }
+    return out;
   }
-  container.innerHTML = routines.map(r => `
-    <div class="agent-card">
-      <div class="agent-name">${r.name}</div>
-      <div class="agent-state ${r.enabled ? '' : 'disabled'}"><span class="dot"></span>${r.enabled ? 'Active' : 'Paused'}</div>
-      <div class="agent-row"><span>Last ran</span><b>${fmtTime(r.last_fired_utc)}</b></div>
-      <div class="agent-row"><span>Next run</span><b>${fmtTime(r.next_run_utc)}</b></div>
-    </div>
-  `).join('');
-}
+  var angle=0;
+  function renderRadar(){ radarEl.textContent = buildFrame(angle); angle=(angle+8)%360; }
+  renderRadar();
+  if (!reduceMotion) setInterval(renderRadar, 160);
 
-function renderPanel(prefix, section){
-  const dateEl = document.getElementById(prefix + 'Date');
-  const contentEl = document.getElementById(prefix + 'Content');
-  if (!section || !section.content){
-    dateEl.textContent = '—';
-    contentEl.innerHTML = '<p class="empty">No file found yet.</p>';
-    return;
+  /* ================= parsing helpers ================= */
+  function getSection(md, name){
+    md = md || '';
+    var re = /^##\s*(.+)$/gm;
+    var marks = []; var m;
+    while ((m = re.exec(md))){ marks.push({ title:m[1].trim(), index:m.index, headerLen:m[0].length }); }
+    for (var i=0;i<marks.length;i++){
+      if (marks[i].title.toLowerCase().indexOf(name.toLowerCase())===0){
+        var start = marks[i].index + marks[i].headerLen;
+        var end = (i+1<marks.length) ? marks[i+1].index : md.length;
+        return md.slice(start,end).trim();
+      }
+    }
+    return '';
   }
-  dateEl.textContent = section.date;
-  contentEl.innerHTML = marked.parse(section.content);
-}
 
-async function refresh(){
-  const dot = document.getElementById('statusDot');
-  const text = document.getElementById('statusText');
-  try {
-    const res = await fetch('/api/data');
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    const data = await res.json();
+  function parseDecisions(tradingSessionText){
+    var re = /\*\*([A-Z]{1,6})\s*(?:—|-)\s*(BUY|SELL|HOLD)\.?\*\*\.?\s*([^\n]*)/g;
+    var map = {}; var order = []; var m;
+    while ((m = re.exec(tradingSessionText))){
+      if (!(m[1] in map)) order.push(m[1]);
+      map[m[1]] = { symbol:m[1], action:m[2], blurb:m[3].trim() };
+    }
+    return order.map(function(s){ return map[s]; });
+  }
+
+  function parseOrders(fullText, dateLabel){
+    var cmdRe = /`python scripts\/trade\.py order (\w+) (\d+) (buy|sell) ([\d.]+)`/g;
+    var orders = []; var m;
+    while ((m = cmdRe.exec(fullText))){
+      var symbol=m[1], qty=parseInt(m[2],10), side=m[3], price=m[4];
+      var windowText = fullText.slice(m.index, m.index+700);
+      var idMatch = windowText.match(/order id `([a-f0-9-]{6,})`/i);
+      var statusMatch = windowText.match(/status[:\s]*`?(\w+)`?/i);
+      var filledMatch = fullText.slice(m.index).match(/(\d+)\s*\/\s*(\d+)\s*filled/i);
+      orders.push({
+        id: idMatch ? idMatch[1] : (symbol+'-'+qty+'-'+price),
+        symbol: symbol, qty: qty, side: side, price: price,
+        status: statusMatch ? statusMatch[1].toLowerCase() : 'unknown',
+        filled: filledMatch ? (filledMatch[1]+'/'+filledMatch[2]) : null,
+        date: dateLabel
+      });
+    }
+    return orders;
+  }
+
+  function parseReview(md){
+    var section = getSection(md, 'Rule adherence');
+    var violations = []; var vRe = /\*\*Violation found:\s*(.*?)\*\*/gi; var m;
+    while ((m = vRe.exec(section))){ violations.push(m[1].trim()); }
+    var titleMatch = (md||'').match(/^#\s*(.+)$/m);
+    return { title: titleMatch ? titleMatch[1].trim() : '', violations: violations };
+  }
+
+  function mdToHtml(src){
+    var div = document.createElement('div'); div.textContent = src || '';
+    var esc = div.innerHTML;
+    esc = esc.replace(/^### (.+)$/gm, '<h4>$1</h4>')
+              .replace(/^## (.+)$/gm, '<h3>$1</h3>')
+              .replace(/^# (.+)$/gm, '<h2>$1</h2>')
+              .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+              .replace(/`([^`]+)`/g, '<code>$1</code>');
+    var lines = esc.split('\n');
+    var out = []; var inList = false;
+    lines.forEach(function(line){
+      var bullet = line.match(/^-\s+(.*)$/);
+      if (bullet){
+        if (!inList){ out.push('<ul>'); inList = true; }
+        out.push('<li>'+bullet[1]+'</li>');
+      } else {
+        if (inList){ out.push('</ul>'); inList = false; }
+        if (line.trim()==='') out.push('');
+        else if (/^<h[234]>/.test(line)) out.push(line);
+        else out.push('<p>'+line+'</p>');
+      }
+    });
+    if (inList) out.push('</ul>');
+    return out.join('\n');
+  }
+
+  function escapeHtml(s){ var d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
+
+  /* ================= modal ================= */
+  var modal = document.getElementById('modal');
+  var modalTitle = document.getElementById('modalTitle');
+  var modalBody = document.getElementById('modalBody');
+  function openModal(title, html){ modalTitle.textContent = title; modalBody.innerHTML = html; modal.classList.remove('hidden'); }
+  document.getElementById('modalClose').addEventListener('click', function(){ modal.classList.add('hidden'); });
+  modal.addEventListener('click', function(e){ if (e.target === modal) modal.classList.add('hidden'); });
+
+  document.getElementById('aboutBtn').addEventListener('click', function(){
+    openModal('About This Data', '<p>This dashboard pulls live from the ' +
+      '<code>claude/trading-journal</code> branch of <code>fabjon14-cmd/Jarvis-trader</code> via a local ' +
+      'Flask server (<code>dashboard/app.py</code>) using this machine\'s already-authenticated <code>gh</code> CLI.</p>' +
+      '<p>Journal and review content refresh every 30 seconds. Agent status (top row) comes from a real ' +
+      '<code>claude -p "/schedule list"</code> call and is cached ~2 minutes since each check takes several seconds.</p>');
+  });
+  document.getElementById('refreshNowBtn').addEventListener('click', function(){ refresh(true); });
+
+  /* ================= agent status ================= */
+  function fmtTime(iso){
+    if (!iso) return '—';
+    var d = new Date(iso);
+    if (isNaN(d)) return '—';
+    return d.toLocaleString('en-US', { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit', hour12:false });
+  }
+  function renderAgents(routines){
+    var container = document.getElementById('agentCards');
+    if (!routines || !routines.length){
+      container.innerHTML = '<div class="empty-state">Agent status unavailable.</div>';
+      return;
+    }
+    container.innerHTML = routines.map(function(r){
+      return '<div class="agent-card">' +
+        '<div class="agent-card-name">'+escapeHtml(r.name)+'</div>' +
+        '<div class="agent-card-state'+(r.enabled?'':' disabled')+'"><span class="dot"></span>'+(r.enabled?'Active':'Paused')+'</div>' +
+        '<div class="agent-card-row"><span>Last ran</span><b>'+fmtTime(r.last_fired_utc)+'</b></div>' +
+        '<div class="agent-card-row"><span>Next run</span><b>'+fmtTime(r.next_run_utc)+'</b></div>' +
+      '</div>';
+    }).join('');
+  }
+
+  /* ================= day tabs + decisions ================= */
+  var dayTabsEl = document.getElementById('dayTabs');
+  var decisionsList = document.getElementById('decisionsList');
+  var decisionsCount = document.getElementById('decisionsCount');
+
+  function tagClass(action){ return action==='BUY'?'tag buy':action==='SELL'?'tag sell':'tag hold'; }
+
+  function renderDayTabs(){
+    dayTabsEl.innerHTML = '';
+    processed.forEach(function(p, idx){
+      var btn = document.createElement('button');
+      btn.className = 'daytab' + (idx===currentDayIndex ? ' active' : '');
+      btn.innerHTML = p.date + (idx===0 ? '<span class="lbl">latest</span>' : '');
+      btn.addEventListener('click', function(){ currentDayIndex = idx; renderDayTabs(); renderDecisions(); });
+      dayTabsEl.appendChild(btn);
+    });
+  }
+
+  function renderDecisions(){
+    decisionsList.innerHTML = '';
+    if (processed.length === 0){
+      decisionsCount.textContent = '—';
+      decisionsList.innerHTML = '<div class="empty-state">No journal entries found yet.</div>';
+      return;
+    }
+    var day = processed[currentDayIndex];
+    decisionsCount.textContent = day.date;
+    if (day.decisions.length === 0){
+      var placeholderNote = /not yet run|fills this in/i.test(day.trading) ? 'Trading Session had not run yet for this entry.' : 'No per-symbol decisions parsed for this entry.';
+      decisionsList.innerHTML = '<div class="empty-state">' + placeholderNote + '</div>';
+    } else {
+      day.decisions.forEach(function(d){
+        var div = document.createElement('div');
+        div.className = 'mission';
+        div.innerHTML =
+          '<div class="mission-top"><span class="mission-name">'+d.symbol+'</span><span class="'+tagClass(d.action)+'">'+d.action+'</span></div>' +
+          '<p class="mission-desc">'+escapeHtml(d.blurb)+'</p>';
+        div.addEventListener('click', function(){ div.classList.toggle('expanded'); });
+        decisionsList.appendChild(div);
+      });
+    }
+    var viewFull = document.createElement('button');
+    viewFull.className = 'link-btn';
+    viewFull.textContent = 'View full ' + day.date + ' entry →';
+    viewFull.addEventListener('click', function(){
+      openModal('Journal — ' + day.date, mdToHtml(day.raw));
+    });
+    decisionsList.appendChild(viewFull);
+  }
+
+  /* ================= symbol matrix ================= */
+  function renderMatrix(){
+    var table = document.getElementById('matrixTable');
+    if (processed.length === 0){ table.innerHTML = ''; return; }
+    var head = '<tr><th>Symbol</th>' + processed.slice().reverse().map(function(p){ return '<th>'+p.date.slice(5)+'</th>'; }).join('') + '</tr>';
+    var rows = SYMBOLS.map(function(sym){
+      var cells = processed.slice().reverse().map(function(p){
+        var d = p.decisions.find(function(x){ return x.symbol === sym; });
+        if (!d) return '<td><span class="cell-tag na">—</span></td>';
+        return '<td><span class="cell-tag '+d.action.toLowerCase()+'" data-date="'+p.date+'" data-sym="'+sym+'">'+d.action+'</span></td>';
+      }).join('');
+      return '<tr><td class="sym">'+sym+'</td>'+cells+'</tr>';
+    }).join('');
+    table.innerHTML = head + rows;
+    table.querySelectorAll('.cell-tag[data-date]').forEach(function(el){
+      el.addEventListener('click', function(){
+        var day = processed.find(function(p){ return p.date === el.getAttribute('data-date'); });
+        var sym = el.getAttribute('data-sym');
+        var d = day.decisions.find(function(x){ return x.symbol === sym; });
+        openModal(sym + ' — ' + day.date, '<p><strong>'+d.action+'.</strong> '+escapeHtml(d.blurb)+'</p>' +
+          '<button class="link-btn" id="jumpFull">View full entry →</button>');
+        document.getElementById('jumpFull').addEventListener('click', function(){
+          openModal('Journal — ' + day.date, mdToHtml(day.raw));
+        });
+      });
+    });
+  }
+
+  /* ================= review ================= */
+  function renderReview(){
+    var body = document.getElementById('reviewBody');
+    var dateEl = document.getElementById('reviewDate');
+    body.innerHTML = '';
+    if (reviewsProcessed.length === 0){
+      dateEl.textContent = '—';
+      body.innerHTML = '<div class="empty-state">No weekly review found yet.</div>';
+      return;
+    }
+    var review = reviewsProcessed[0];
+    dateEl.textContent = review.date;
+    if (review.violations.length > 0){
+      review.violations.forEach(function(v){
+        var div = document.createElement('div');
+        div.className = 'violation';
+        div.innerHTML = '<b>Violation:</b> ' + escapeHtml(v);
+        body.appendChild(div);
+      });
+    } else {
+      var div = document.createElement('div');
+      div.className = 'clean-note';
+      div.textContent = 'No rule violations flagged in this review.';
+      body.appendChild(div);
+    }
+    if (review.title){
+      var meta = document.createElement('div');
+      meta.className = 'review-meta';
+      meta.textContent = review.title;
+      body.appendChild(meta);
+    }
+    var viewFull = document.createElement('button');
+    viewFull.className = 'link-btn';
+    viewFull.textContent = 'View full review →';
+    viewFull.addEventListener('click', function(){ openModal('Weekly Review — ' + review.date, mdToHtml(review.raw)); });
+    body.appendChild(viewFull);
+  }
+
+  /* ================= stats + orders ================= */
+  function renderStatsAndOrders(){
+    if (processed.length === 0){
+      document.getElementById('statEntry').textContent = '—';
+      document.getElementById('statEntrySub').textContent = 'no entries yet';
+      document.getElementById('statDecisions').textContent = '—';
+      document.getElementById('statOrders').textContent = '0';
+      document.getElementById('statOrdersSub').textContent = 'none placed';
+      document.getElementById('statViolations').textContent = '—';
+      document.getElementById('statViolationsSub').textContent = 'no review yet';
+      document.getElementById('ordersList').innerHTML = '<div class="empty-state">No orders placed across loaded entries.</div>';
+      return;
+    }
+
+    var latest = processed[0];
+    document.getElementById('statEntry').textContent = latest.date;
+    document.getElementById('statEntrySub').textContent = 'journal/' + latest.date + '.md';
+
+    var counts = {};
+    latest.decisions.forEach(function(d){ counts[d.action] = (counts[d.action]||0)+1; });
+    var parts = ['BUY','SELL','HOLD'].filter(function(a){ return counts[a]; }).map(function(a){ return counts[a]+' '+a.toLowerCase(); });
+    document.getElementById('statDecisions').textContent = parts.length ? parts.join(' · ') : 'none';
+
+    var orderMap = {};
+    processed.forEach(function(p){ p.orders.forEach(function(o){
+      if (!orderMap[o.id]) orderMap[o.id] = [];
+      orderMap[o.id].push(o);
+    }); });
+    var orderIds = Object.keys(orderMap);
+    document.getElementById('statOrders').textContent = orderIds.length;
+    document.getElementById('statOrdersSub').textContent = orderIds.length
+      ? orderIds.map(function(id){ return orderMap[id][0].symbol; }).join(', ')
+      : 'none placed';
+
+    var vCount = reviewsProcessed.length ? reviewsProcessed[0].violations.length : 0;
+    var vEl = document.getElementById('statViolations');
+    vEl.textContent = vCount;
+    vEl.className = 'stat-value ' + (vCount>0 ? 'crit' : 'good');
+    document.getElementById('statViolationsSub').textContent = reviewsProcessed.length ? reviewsProcessed[0].title : 'no review yet';
+
+    var ordersList = document.getElementById('ordersList');
+    ordersList.innerHTML = '';
+    if (orderIds.length === 0){
+      ordersList.innerHTML = '<div class="empty-state">No orders placed across loaded entries.</div>';
+    } else {
+      orderIds.forEach(function(id){
+        var mentions = orderMap[id];
+        var latestMention = mentions[mentions.length-1];
+        var statusClass = latestMention.status==='filled' ? 'good' : (['rejected','canceled','cancelled','expired'].indexOf(latestMention.status)!==-1 ? 'crit' : 'warn');
+        var div = document.createElement('div');
+        div.className = 'position';
+        div.innerHTML =
+          '<div class="position-top">' +
+            '<span class="pos-ticker">'+latestMention.symbol+'</span>' +
+            '<span class="pos-meta">'+latestMention.side.toUpperCase()+' '+latestMention.qty+' sh · limit $'+latestMention.price+(latestMention.filled?(' · '+latestMention.filled+' filled'):'')+'</span>' +
+            '<span class="pos-status '+statusClass+'">'+latestMention.status+'</span>' +
+          '</div>' +
+          '<div class="pos-history">' +
+            mentions.map(function(m){ return m.date+': status "'+m.status+'"'+(m.filled?(', '+m.filled+' filled'):''); }).join('<br/>') +
+          '</div>';
+        div.addEventListener('click', function(){ div.classList.toggle('expanded'); });
+        ordersList.appendChild(div);
+      });
+    }
+  }
+
+  /* ================= search ================= */
+  var searchInput = document.getElementById('searchInput');
+  var searchResults = document.getElementById('searchResults');
+
+  function runSearch(q){
+    q = q.trim();
+    searchResults.innerHTML = '';
+    if (q.length < 2){ searchResults.classList.remove('open'); return; }
+    var lc = q.toLowerCase();
+    var hits = [];
+    allDocs.forEach(function(doc){
+      var idx = doc.raw.toLowerCase().indexOf(lc);
+      if (idx !== -1){
+        var start = Math.max(0, idx-60);
+        var snippet = doc.raw.slice(start, idx+80).replace(/\n/g,' ');
+        hits.push({ doc:doc, snippet: (start>0?'…':'') + snippet + '…' });
+      }
+    });
+    if (hits.length === 0){
+      searchResults.innerHTML = '<div class="sr-item">No matches.</div>';
+    } else {
+      hits.forEach(function(h){
+        var div = document.createElement('div');
+        div.className = 'sr-item';
+        var esc = escapeHtml(h.snippet);
+        var re = new RegExp('('+q.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+')','ig');
+        esc = esc.replace(re, '<mark>$1</mark>');
+        div.innerHTML = '<div class="sr-date">'+h.doc.type+' · '+h.doc.date+'</div><div class="sr-snip">'+esc+'</div>';
+        div.addEventListener('click', function(){
+          openModal(h.doc.type + ' — ' + h.doc.date, mdToHtml(h.doc.raw));
+          searchResults.classList.remove('open');
+          searchInput.value = '';
+        });
+        searchResults.appendChild(div);
+      });
+    }
+    searchResults.classList.add('open');
+  }
+  searchInput.addEventListener('input', function(){ runSearch(searchInput.value); });
+  document.addEventListener('click', function(e){
+    if (!e.target.closest('.searchwrap')) searchResults.classList.remove('open');
+  });
+
+  /* ================= apply a fresh /api/data payload ================= */
+  function applyData(data){
+    processed = (data.journal_entries || []).filter(function(j){ return j.raw; }).map(function(j){
+      var trading = getSection(j.raw, 'Trading Session');
+      var research = getSection(j.raw, 'Research');
+      var eod = getSection(j.raw, 'End of Day Reflection');
+      return {
+        date: j.date, raw: j.raw, research: research, trading: trading, eod: eod,
+        decisions: parseDecisions(trading),
+        orders: parseOrders(trading + '\n' + eod, j.date)
+      };
+    }).sort(function(a,b){ return b.date.localeCompare(a.date); });
+
+    reviewsProcessed = (data.reviews || []).filter(function(r){ return r.raw; }).map(function(r){
+      var p = parseReview(r.raw);
+      return { date: r.date, raw: r.raw, title: p.title, violations: p.violations };
+    }).sort(function(a,b){ return b.date.localeCompare(a.date); });
+
+    allDocs = processed.map(function(p){ return { type:'Journal', date:p.date, raw:p.raw }; })
+      .concat(reviewsProcessed.map(function(r){ return { type:'Review', date:r.date, raw:r.raw }; }));
+
+    if (currentDayIndex >= processed.length) currentDayIndex = 0;
+
     renderAgents(data.routines);
-    renderPanel('journal', data.journal);
-    renderPanel('review', data.review);
-    renderPanel('scout', data.scout);
-    dot.className = 'dot live';
-    text.textContent = 'Live — fetched ' + new Date(data.fetched_at).toLocaleTimeString('en-US', { hour12:false });
-  } catch (err) {
-    dot.className = 'dot error';
-    text.textContent = 'Fetch failed: ' + err.message;
-  }
-}
+    renderDayTabs();
+    renderDecisions();
+    renderMatrix();
+    renderReview();
+    renderStatsAndOrders();
 
-refresh();
-setInterval(refresh, 30000);
+    document.getElementById('entriesLoadedCount').textContent = processed.length + ' ENTRIES LOADED';
+    document.getElementById('entriesVal').textContent = processed.length + ' journal · ' + reviewsProcessed.length + ' review' + (reviewsProcessed.length===1?'':'s');
+    document.getElementById('rangeVal').textContent = processed.length
+      ? (processed[processed.length-1].date + ' → ' + processed[0].date)
+      : '—';
+    document.getElementById('builtAt').textContent = new Date(data.fetched_at).toLocaleTimeString('en-US', { hour12:false });
+  }
+
+  /* ================= refresh ================= */
+  var refreshing = false;
+  async function refresh(manual){
+    if (refreshing) return;
+    refreshing = true;
+    var dot = document.getElementById('statusDot');
+    var text = document.getElementById('statusText');
+    if (manual) text.textContent = 'Refreshing…';
+    try {
+      var res = await fetch('/api/data');
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      var data = await res.json();
+      applyData(data);
+      dot.className = 'pulse-dot';
+      text.textContent = 'Live — fetched ' + new Date(data.fetched_at).toLocaleTimeString('en-US', { hour12:false });
+    } catch (err) {
+      dot.className = 'pulse-dot error';
+      text.textContent = 'Fetch failed: ' + err.message;
+    } finally {
+      refreshing = false;
+    }
+  }
+
+  refresh();
+  setInterval(refresh, 30000);
+
+})();
 </script>
 </body>
 </html>

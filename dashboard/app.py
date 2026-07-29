@@ -29,6 +29,14 @@ CLAUDE_BIN = os.path.expanduser("~/.local/bin/claude")
 STATUS_CACHE_TTL = 120
 _status_cache = {"data": None, "fetched_at": 0}
 
+# Fetching full history is a GitHub API call per file (day tabs + the symbol
+# matrix need every entry, not just the latest) — cache it too, both to keep
+# each dashboard poll fast and to stay well under GitHub's rate limit.
+CONTENT_CACHE_TTL = 45
+MAX_JOURNAL_ENTRIES = 20
+MAX_REVIEWS = 12
+_content_cache = {"data": None, "fetched_at": 0}
+
 
 def gh_api(path):
     """Call the GitHub API via the gh CLI's existing auth. Returns None on failure."""
@@ -89,31 +97,39 @@ def get_routine_status():
     return _status_cache["data"]  # stale (or None) rather than blocking the page on failure
 
 
+def get_content():
+    """Full journal + review history (capped), cached server-side so a 30s
+    dashboard poll doesn't re-fetch every file on every request."""
+    now = time.time()
+    if _content_cache["data"] is not None and (now - _content_cache["fetched_at"]) < CONTENT_CACHE_TTL:
+        return _content_cache["data"]
+
+    journal_files = list_dir("journal")[:MAX_JOURNAL_ENTRIES]
+    review_files = list_dir("reviews")[:MAX_REVIEWS]
+
+    data = {
+        "journal_entries": [
+            {"date": name.replace(".md", ""), "raw": get_file(f"journal/{name}")}
+            for name in journal_files
+        ],
+        "reviews": [
+            {"date": name.replace(".md", ""), "raw": get_file(f"reviews/{name}")}
+            for name in review_files
+        ],
+    }
+    _content_cache["data"] = data
+    _content_cache["fetched_at"] = now
+    return data
+
+
 @app.route("/api/data")
 def api_data():
-    journal_files = list_dir("journal")
-    review_files = list_dir("reviews")
-    scout_files = list_dir("scout")
-
-    latest_journal = journal_files[0] if journal_files else None
-    latest_review = review_files[0] if review_files else None
-    latest_scout = scout_files[0] if scout_files else None
-
+    content = get_content()
     return jsonify({
         "fetched_at": datetime.now(timezone.utc).isoformat(),
         "routines": get_routine_status(),
-        "journal": {
-            "date": latest_journal,
-            "content": get_file(f"journal/{latest_journal}") if latest_journal else None,
-        },
-        "review": {
-            "date": latest_review,
-            "content": get_file(f"reviews/{latest_review}") if latest_review else None,
-        },
-        "scout": {
-            "date": latest_scout,
-            "content": get_file(f"scout/{latest_scout}") if latest_scout else None,
-        },
+        "journal_entries": content["journal_entries"],
+        "reviews": content["reviews"],
     })
 
 

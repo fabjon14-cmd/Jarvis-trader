@@ -139,5 +139,15 @@ def index():
 
 
 if __name__ == "__main__":
-    print("Trader live dashboard — http://localhost:5050")
-    app.run(port=5050, debug=False)
+    print("Trader live dashboard")
+    print("  Local:      http://localhost:5050")
+    tailscale_ip = subprocess.run(
+        ["tailscale", "ip", "-4"], capture_output=True, text=True, timeout=5
+    )
+    if tailscale_ip.returncode == 0 and tailscale_ip.stdout.strip():
+        print(f"  Tailscale:  http://{tailscale_ip.stdout.strip()}:5050  (reachable from your phone)")
+    else:
+        print("  Tailscale:  not connected yet — run `tailscale ip -4` once it's set up")
+    # 0.0.0.0 so Tailscale (and the local network) can reach it — plain
+    # localhost binding is invisible to every other device, Tailscale included.
+    app.run(host="0.0.0.0", port=5050, debug=False)

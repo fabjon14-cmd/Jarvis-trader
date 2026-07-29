@@ -13,7 +13,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 
 from anthropic import Anthropic
-from research import get_account, get_positions, get_bars, get_news
+from research import get_account, get_positions, get_bars, get_news, get_orders, get_portfolio_history
 from trade import place_order, cancel_all_orders, get_market_status
 
 client = Anthropic()  # reads ANTHROPIC_API_KEY from the environment
@@ -59,6 +59,28 @@ TOOLS = [
         "name": "get_market_status",
         "description": "Check whether the market is currently open, and the next open/close times.",
         "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "get_orders",
+        "description": "Get historical orders (filled, canceled, expired, etc.), most recent first — use for reviewing past trade outcomes.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string", "description": "Order status filter, e.g. 'all', 'closed', 'open'", "default": "all"},
+                "limit": {"type": "integer", "description": "Max orders to return", "default": 100},
+            },
+        },
+    },
+    {
+        "name": "get_portfolio_history",
+        "description": "Get account equity history over a period — use for computing P&L/drawdown over a stretch of time.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "period": {"type": "string", "description": "e.g. '1W', '1M'", "default": "1W"},
+                "timeframe": {"type": "string", "description": "e.g. '1D', '1H'", "default": "1D"},
+            },
+        },
     },
     {
         "name": "place_order",
@@ -118,6 +140,10 @@ def run_tool(name, tool_input):
         return get_news(tool_input["symbol"])
     if name == "get_market_status":
         return get_market_status()
+    if name == "get_orders":
+        return get_orders(tool_input.get("status", "all"), tool_input.get("limit", 100))
+    if name == "get_portfolio_history":
+        return get_portfolio_history(tool_input.get("period", "1W"), tool_input.get("timeframe", "1D"))
 
     if name == "place_order":
         return place_order(

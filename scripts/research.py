@@ -83,6 +83,24 @@ def get_news(symbol):
     return response.json()
 
 
+def get_orders(status="all", limit=100):
+    """Get historical orders (filled, canceled, expired, etc.), most recent first."""
+    url = f"{BASE_URL}/v2/orders"
+    params = {"status": status, "limit": limit, "direction": "desc"}
+    response = requests.get(url, headers=_headers(), params=params, timeout=REQUEST_TIMEOUT)
+    response.raise_for_status()
+    return response.json()
+
+
+def get_portfolio_history(period="1W", timeframe="1D"):
+    """Get account equity history over a period, e.g. period='1W' for the past week."""
+    url = f"{BASE_URL}/v2/account/portfolio/history"
+    params = {"period": period, "timeframe": timeframe}
+    response = requests.get(url, headers=_headers(), params=params, timeout=REQUEST_TIMEOUT)
+    response.raise_for_status()
+    return response.json()
+
+
 if __name__ == "__main__":
     import sys
     action = sys.argv[1] if len(sys.argv) > 1 else "account"
@@ -94,5 +112,11 @@ if __name__ == "__main__":
         print(json.dumps(get_news(symbol)))
     elif action == "positions":
         print(json.dumps(get_positions()))
+    elif action == "orders":
+        status = symbol or "all"
+        print(json.dumps(get_orders(status=status)))
+    elif action == "portfolio":
+        period = symbol or "1W"
+        print(json.dumps(get_portfolio_history(period=period)))
     else:
         print(json.dumps(get_account()))

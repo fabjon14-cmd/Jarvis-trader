@@ -9,6 +9,7 @@ account without deliberately deciding to.
 
 - `scripts/research.py` — `account | positions | bars SYMBOL | news SYMBOL | orders [STATUS] | portfolio [PERIOD] | earnings SYMBOL | movers [TOP]` (read-only)
 - `scripts/trade.py` — `status | order SYMBOL QTY SIDE [LIMIT_PRICE] | cancel`
+- `scripts/notify.py "SUBJECT" FILE_PATH` — emails FILE_PATH's contents as the body via Resend, to `REPORT_TO_EMAIL`. Run this as the last step of every scheduled routine, pointing at the file (or section) it just wrote, so the operator gets the full report by email, not just a "ran" ping.
 - `watchlist.json` — the list of symbols in scope; don't trade outside it without being told to.
 
 `scripts/trade.py`'s `place_order` pauses for a human y/N confirmation when run

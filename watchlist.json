@@ -1,3 +1,11 @@
 {
-  "symbols": ["NVDA", "AAPL", "MSFT", "AMD", "TSLA"]
+  "symbols": [
+    "NVDA", "AAPL", "MSFT", "AMD", "TSLA", "GOOGL", "AMZN", "META", "CRM", "ORCL", "ADBE",
+    "JPM", "BAC", "GS", "V", "MA",
+    "UNH", "JNJ", "LLY", "PFE",
+    "WMT", "PG", "KO", "MCD", "NKE", "HD",
+    "XOM", "CVX",
+    "BA", "CAT",
+    "DIS", "NFLX"
+  ]
 }

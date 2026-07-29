@@ -106,6 +106,15 @@ def get_earnings_date(symbol):
     """Get a symbol's next upcoming earnings date via Finnhub, and whether it
     falls within the next 48 hours (for the earnings-blackout trading rule).
     Returns next_earnings_date=None if nothing is scheduled in the lookahead window.
+
+    Finnhub only gives date-level granularity, not a timestamp, so this compares
+    whole calendar days rather than hours: computing "hours until midnight UTC of
+    that date" would make today's own earnings look like it already passed the
+    moment any time has elapsed since midnight, which is exactly backwards — a
+    same-day report is the most urgent case for the blackout rule, not one to
+    exclude. within_48h is true for a report dated today, tomorrow, or the day
+    after (a 3-calendar-day window standing in for "48 hours" given the
+    date-only precision).
     """
     today = datetime.now(timezone.utc).date()
     horizon = today + timedelta(days=120)
@@ -121,19 +130,30 @@ def get_earnings_date(symbol):
     calendar = response.json().get("earningsCalendar") or []
 
     if not calendar:
-        return {"symbol": symbol, "next_earnings_date": None, "hours_until": None, "within_48h": False}
+        return {"symbol": symbol, "next_earnings_date": None, "days_until": None, "within_48h": False}
 
     calendar.sort(key=lambda e: e.get("date", ""))
     next_date_str = calendar[0]["date"]
-    next_date = datetime.strptime(next_date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-    hours_until = (next_date - datetime.now(timezone.utc)).total_seconds() / 3600
+    next_date = datetime.strptime(next_date_str, "%Y-%m-%d").date()
+    days_until = (next_date - today).days
 
     return {
         "symbol": symbol,
         "next_earnings_date": next_date_str,
-        "hours_until": round(hours_until, 1),
-        "within_48h": 0 <= hours_until <= 48,
+        "days_until": days_until,
+        "within_48h": 0 <= days_until <= 2,
     }
+
+
+def get_movers(top=10):
+    """Get today's top gaining and losing stocks market-wide (not limited to
+    the watchlist) via Alpaca's screener API — used to find candidates for
+    the watchlist, not to trade them directly."""
+    url = "https://data.alpaca.markets/v1beta1/screener/stocks/movers"
+    params = {"top": top}
+    response = requests.get(url, headers=_headers(), params=params, timeout=REQUEST_TIMEOUT)
+    response.raise_for_status()
+    return response.json()
 
 
 if __name__ == "__main__":
@@ -155,5 +175,8 @@ if __name__ == "__main__":
         print(json.dumps(get_portfolio_history(period=period)))
     elif action == "earnings" and symbol:
         print(json.dumps(get_earnings_date(symbol)))
+    elif action == "movers":
+        top = int(symbol) if symbol else 10
+        print(json.dumps(get_movers(top=top)))
     else:
         print(json.dumps(get_account()))

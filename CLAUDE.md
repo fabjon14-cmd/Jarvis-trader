@@ -84,6 +84,26 @@ re-summarize the journal's prose, compute real figures from these:
   week (from portfolio history) — these can differ if positions are still open.
 - Largest win / largest loss, if any.
 
+## Benchmark comparison
+Pull SPY's price at the start and end of the review period via
+`scripts/research.py bars SPY` and compute its % change over the same window
+as the account's equity change above. State explicitly whether the account
+out- or under-performed SPY this week, and by how much (in percentage points,
+not just both numbers side by side). A flat/no-trade week still gets compared
+— "we made no moves and SPY did X" is itself useful signal.
+
+## Trend across weeks
+Read every prior `reviews/*.md` file on this branch (there may be none yet
+for early weeks — say so plainly rather than fabricating a trend from
+nothing). Across however many weeks of history exist, note:
+- Whether win rate and equity are trending up, down, or flat.
+- Whether the account has out- or under-performed SPY cumulatively, not just
+  this week.
+- Whether any single rule (earnings window, falling-knife, sizing, averaging
+  down) has been flagged as violated in more than one week — call this out
+  explicitly by name if so, since a repeat violation is a rule-design problem,
+  not a one-off mistake.
+
 ## Rule adherence
 Re-read this week's Trading Session journal entries against the Trading rules
 above. Flag any trade that looks like it violated a rule (sizing, earnings

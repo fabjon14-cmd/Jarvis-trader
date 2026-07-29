@@ -13,7 +13,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 
 from anthropic import Anthropic
-from research import get_account, get_positions, get_bars, get_news, get_orders, get_portfolio_history
+from research import get_account, get_positions, get_bars, get_news, get_orders, get_portfolio_history, get_earnings_date
 from trade import place_order, cancel_all_orders, get_market_status
 
 client = Anthropic()  # reads ANTHROPIC_API_KEY from the environment
@@ -83,6 +83,21 @@ TOOLS = [
         },
     },
     {
+        "name": "get_earnings_date",
+        "description": (
+            "Get a symbol's next upcoming earnings date and whether it falls within 48 hours. "
+            "Always check this before opening a new position — CLAUDE.md's earnings-blackout rule "
+            "depends on this, not on inferring timing from news headlines."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string", "description": "Ticker symbol, e.g. NVDA"},
+            },
+            "required": ["symbol"],
+        },
+    },
+    {
         "name": "place_order",
         "description": (
             "Place a buy or sell order on the paper-trading account. Always state the exact "
@@ -144,6 +159,8 @@ def run_tool(name, tool_input):
         return get_orders(tool_input.get("status", "all"), tool_input.get("limit", 100))
     if name == "get_portfolio_history":
         return get_portfolio_history(tool_input.get("period", "1W"), tool_input.get("timeframe", "1D"))
+    if name == "get_earnings_date":
+        return get_earnings_date(tool_input["symbol"])
 
     if name == "place_order":
         return place_order(

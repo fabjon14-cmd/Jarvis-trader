@@ -12,6 +12,7 @@ load_dotenv()
 ALPACA_KEY = os.getenv("APCA_API_KEY_ID")
 ALPACA_SECRET = os.getenv("APCA_API_SECRET_KEY")
 BASE_URL = os.getenv("APCA_BASE_URL", "https://paper-api.alpaca.markets")
+FINNHUB_KEY = os.getenv("FINNHUB_API_KEY")
 
 REQUEST_TIMEOUT = 15
 
@@ -101,6 +102,40 @@ def get_portfolio_history(period="1W", timeframe="1D"):
     return response.json()
 
 
+def get_earnings_date(symbol):
+    """Get a symbol's next upcoming earnings date via Finnhub, and whether it
+    falls within the next 48 hours (for the earnings-blackout trading rule).
+    Returns next_earnings_date=None if nothing is scheduled in the lookahead window.
+    """
+    today = datetime.now(timezone.utc).date()
+    horizon = today + timedelta(days=120)
+    url = "https://finnhub.io/api/v1/calendar/earnings"
+    params = {
+        "from": today.strftime("%Y-%m-%d"),
+        "to": horizon.strftime("%Y-%m-%d"),
+        "symbol": symbol,
+        "token": FINNHUB_KEY,
+    }
+    response = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
+    response.raise_for_status()
+    calendar = response.json().get("earningsCalendar") or []
+
+    if not calendar:
+        return {"symbol": symbol, "next_earnings_date": None, "hours_until": None, "within_48h": False}
+
+    calendar.sort(key=lambda e: e.get("date", ""))
+    next_date_str = calendar[0]["date"]
+    next_date = datetime.strptime(next_date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    hours_until = (next_date - datetime.now(timezone.utc)).total_seconds() / 3600
+
+    return {
+        "symbol": symbol,
+        "next_earnings_date": next_date_str,
+        "hours_until": round(hours_until, 1),
+        "within_48h": 0 <= hours_until <= 48,
+    }
+
+
 if __name__ == "__main__":
     import sys
     action = sys.argv[1] if len(sys.argv) > 1 else "account"
@@ -118,5 +153,7 @@ if __name__ == "__main__":
     elif action == "portfolio":
         period = symbol or "1W"
         print(json.dumps(get_portfolio_history(period=period)))
+    elif action == "earnings" and symbol:
+        print(json.dumps(get_earnings_date(symbol)))
     else:
         print(json.dumps(get_account()))

@@ -7,7 +7,7 @@ account without deliberately deciding to.
 
 ## Tools available
 
-- `scripts/research.py` — `account | positions | bars SYMBOL | news SYMBOL | orders [STATUS] | portfolio [PERIOD]` (read-only)
+- `scripts/research.py` — `account | positions | bars SYMBOL | news SYMBOL | orders [STATUS] | portfolio [PERIOD] | earnings SYMBOL` (read-only)
 - `scripts/trade.py` — `status | order SYMBOL QTY SIDE [LIMIT_PRICE] | cancel`
 - `watchlist.json` — the list of symbols in scope; don't trade outside it without being told to.
 
@@ -30,7 +30,11 @@ this bot's configured risk parameters.
 - No adding to a losing position ("averaging down").
 - Do not open a new position within 48h of a symbol's earnings report — event
   risk without a directional edge is a hold, not a bet. Existing positions are
-  a separate call (see selling rule below), this only blocks new buys.
+  a separate call (see selling rule below), this only blocks new buys. Check
+  this with `scripts/research.py earnings SYMBOL` (`within_48h` field) before
+  every new buy — don't infer earnings timing from news headlines, that's how
+  the AAPL buy on 2026-07-29 slipped through despite the risk being noted in
+  the same journal entry.
 - Do not buy into a sharp, uncorroborated downtrend ("falling knife") — a
   symbol dropping hard with no stabilization signal (e.g. news of a bottom,
   reversal in the last session or two) is a hold, not a discount.
@@ -83,6 +87,26 @@ re-summarize the journal's prose, compute real figures from these:
 - Realized P&L this week (from closed round-trips) and equity change over the
   week (from portfolio history) — these can differ if positions are still open.
 - Largest win / largest loss, if any.
+
+## Benchmark comparison
+Pull SPY's price at the start and end of the review period via
+`scripts/research.py bars SPY` and compute its % change over the same window
+as the account's equity change above. State explicitly whether the account
+out- or under-performed SPY this week, and by how much (in percentage points,
+not just both numbers side by side). A flat/no-trade week still gets compared
+— "we made no moves and SPY did X" is itself useful signal.
+
+## Trend across weeks
+Read every prior `reviews/*.md` file on this branch (there may be none yet
+for early weeks — say so plainly rather than fabricating a trend from
+nothing). Across however many weeks of history exist, note:
+- Whether win rate and equity are trending up, down, or flat.
+- Whether the account has out- or under-performed SPY cumulatively, not just
+  this week.
+- Whether any single rule (earnings window, falling-knife, sizing, averaging
+  down) has been flagged as violated in more than one week — call this out
+  explicitly by name if so, since a repeat violation is a rule-design problem,
+  not a one-off mistake.
 
 ## Rule adherence
 Re-read this week's Trading Session journal entries against the Trading rules

@@ -7,7 +7,7 @@ account without deliberately deciding to.
 
 ## Tools available
 
-- `scripts/research.py` — `account | positions | bars SYMBOL | news SYMBOL | orders [STATUS] | portfolio [PERIOD]` (read-only)
+- `scripts/research.py` — `account | positions | bars SYMBOL | news SYMBOL | orders [STATUS] | portfolio [PERIOD] | earnings SYMBOL` (read-only)
 - `scripts/trade.py` — `status | order SYMBOL QTY SIDE [LIMIT_PRICE] | cancel`
 - `watchlist.json` — the list of symbols in scope; don't trade outside it without being told to.
 
@@ -30,7 +30,11 @@ this bot's configured risk parameters.
 - No adding to a losing position ("averaging down").
 - Do not open a new position within 48h of a symbol's earnings report — event
   risk without a directional edge is a hold, not a bet. Existing positions are
-  a separate call (see selling rule below), this only blocks new buys.
+  a separate call (see selling rule below), this only blocks new buys. Check
+  this with `scripts/research.py earnings SYMBOL` (`within_48h` field) before
+  every new buy — don't infer earnings timing from news headlines, that's how
+  the AAPL buy on 2026-07-29 slipped through despite the risk being noted in
+  the same journal entry.
 - Do not buy into a sharp, uncorroborated downtrend ("falling knife") — a
   symbol dropping hard with no stabilization signal (e.g. news of a bottom,
   reversal in the last session or two) is a hold, not a discount.

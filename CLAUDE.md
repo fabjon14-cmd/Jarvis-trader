@@ -18,16 +18,27 @@ per run (`TRADER_MAX_ORDER_NOTIONAL`, default $2,000; `TRADER_MAX_ORDERS_PER_RUN
 default 10). A rejection under those caps is expected behavior, not a bug —
 report it in the journal rather than retrying with adjusted numbers.
 
-## Trading rules — PLACEHOLDER, edit before relying on this
+## Trading rules
 
-These are starter rules only, not a real strategy. Replace them with your own
-before the Trading Session routine runs unattended.
+These are the operator's deliberately chosen rules (finalized 2026-07-29 after
+reviewing a live test run) — not placeholders, and not financial advice, just
+this bot's configured risk parameters.
 
 - Only trade symbols in `watchlist.json`.
-- Max position size: 10% of buying power per symbol.
-- Max 5 open positions at once.
+- Max position size: 10% of buying power per symbol. Max 5 open positions at once.
 - Limit orders only in unattended runs (enforced in code, see above).
 - No adding to a losing position ("averaging down").
+- Do not open a new position within 48h of a symbol's earnings report — event
+  risk without a directional edge is a hold, not a bet. Existing positions are
+  a separate call (see selling rule below), this only blocks new buys.
+- Do not buy into a sharp, uncorroborated downtrend ("falling knife") — a
+  symbol dropping hard with no stabilization signal (e.g. news of a bottom,
+  reversal in the last session or two) is a hold, not a discount.
+- Selling is allowed, not just buying/holding: if new research turns clearly
+  negative on a symbol you currently hold (deteriorating fundamentals, a bad
+  earnings print, a broken thesis — not just short-term volatility), sell or
+  trim the position. State the specific change in research that justifies it;
+  don't sell on noise.
 - If research is inconclusive or stale (missing/failed fetch), hold — don't guess.
 
 ## Journal format

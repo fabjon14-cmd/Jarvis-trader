@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>J.A.R.V.I.S. // LIVE OPS</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<style>
+  :root{
+    --bg: #070b11;
+    --panel: #0e1620;
+    --panel-2: #111b27;
+    --line: #21384a;
+    --line-soft: #16232f;
+    --ink: #dceaf2;
+    --muted: #6f8fa6;
+    --dim: #3d5568;
+    --accent: #2fd7ff;
+    --accent-2: #0e93b8;
+    --warn: #ffb020;
+    --crit: #ff4d5e;
+    --good: #35e28a;
+    --font-display: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
+    --font-body: ui-sans-serif, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  *{ box-sizing: border-box; }
+  html,body{ margin:0; padding:0; }
+  body{
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--font-display);
+    font-variant-numeric: tabular-nums;
+    min-height: 100vh;
+  }
+
+  .topbar{
+    display:flex; align-items:center; justify-content:space-between;
+    padding: 16px 28px;
+    border-bottom: 1px solid var(--line);
+    background: linear-gradient(180deg, rgba(47,215,255,0.05), transparent);
+  }
+  .mark{
+    font-weight:700; font-size:19px; letter-spacing:0.2em;
+    text-shadow: 0 0 18px rgba(47,215,255,0.35);
+  }
+  .mark span{ color: var(--accent); }
+  .status{ display:flex; align-items:center; gap:18px; font-size:12px; color:var(--muted); letter-spacing:0.05em; }
+  .dot{ width:8px; height:8px; border-radius:50%; display:inline-block; margin-right:6px; background:var(--good); }
+  .dot.stale{ background:var(--warn); }
+  .dot.error{ background:var(--crit); }
+  @keyframes pulse{ 0%{opacity:1;} 50%{opacity:0.4;} 100%{opacity:1;} }
+  .dot.live{ animation:pulse 2s infinite; }
+
+  .grid{
+    display:grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 20px;
+    padding: 22px 28px;
+    align-items: start;
+  }
+  @media (max-width: 1100px){ .grid{ grid-template-columns: 1fr; } }
+
+  .panel{
+    position:relative;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    padding: 18px;
+    min-height: 200px;
+  }
+  .cnr{ position:absolute; width:12px; height:12px; }
+  .cnr.tl{ top:-1px; left:-1px; border-top:2px solid var(--accent); border-left:2px solid var(--accent); }
+  .cnr.tr{ top:-1px; right:-1px; border-top:2px solid var(--accent); border-right:2px solid var(--accent); }
+  .cnr.bl{ bottom:-1px; left:-1px; border-bottom:2px solid var(--accent); border-left:2px solid var(--accent); }
+  .cnr.br{ bottom:-1px; right:-1px; border-bottom:2px solid var(--accent); border-right:2px solid var(--accent); }
+
+  .panel-head{
+    display:flex; align-items:baseline; justify-content:space-between;
+    margin-bottom:14px; padding-bottom:10px; border-bottom:1px solid var(--line-soft);
+  }
+  .panel-title{ font-weight:700; font-size:12px; letter-spacing:0.16em; }
+  .panel-title::before{ content:"// "; color: var(--accent); }
+  .panel-date{ font-size:11px; color:var(--muted); }
+
+  .content{
+    font-family: var(--font-body);
+    font-size: 13px;
+    line-height: 1.55;
+    color: var(--ink);
+    max-height: 65vh;
+    overflow-y: auto;
+  }
+  .content::-webkit-scrollbar{ width:8px; }
+  .content::-webkit-scrollbar-thumb{ background: var(--line); }
+  .content h1{ font-family: var(--font-display); font-size:15px; letter-spacing:0.05em; color:var(--accent); margin: 0 0 10px; }
+  .content h2{ font-family: var(--font-display); font-size:12px; letter-spacing:0.1em; text-transform:uppercase; color:var(--ink); border-bottom:1px solid var(--line-soft); padding-bottom:6px; margin: 18px 0 10px; }
+  .content h2:first-child{ margin-top:0; }
+  .content p{ margin: 0 0 10px; color: var(--muted); }
+  .content strong{ color: var(--ink); }
+  .content code{ font-family: var(--font-display); background: var(--panel-2); padding: 1px 5px; font-size:12px; color: var(--accent); }
+  .content ul, .content ol{ margin: 0 0 10px; padding-left: 20px; color: var(--muted); }
+  .content li{ margin-bottom: 4px; }
+  .content .empty{ color: var(--dim); font-style: italic; }
+
+  .footer{
+    padding: 14px 28px; border-top:1px solid var(--line);
+    font-size:11px; color:var(--dim); letter-spacing:0.05em;
+  }
+</style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="mark">J.A.R.V.I.S<span>.</span> LIVE OPS</div>
+    <div class="status">
+      <span><span class="dot live" id="statusDot"></span><span id="statusText">Connecting…</span></span>
+      <span id="clock">--:--:--</span>
+    </div>
+  </header>
+
+  <main class="grid">
+    <section class="panel">
+      <i class="cnr tl"></i><i class="cnr tr"></i><i class="cnr bl"></i><i class="cnr br"></i>
+      <div class="panel-head">
+        <span class="panel-title">Latest Journal</span>
+        <span class="panel-date" id="journalDate">—</span>
+      </div>
+      <div class="content" id="journalContent"><p class="empty">Loading…</p></div>
+    </section>
+
+    <section class="panel">
+      <i class="cnr tl"></i><i class="cnr tr"></i><i class="cnr bl"></i><i class="cnr br"></i>
+      <div class="panel-head">
+        <span class="panel-title">Latest Weekly Review</span>
+        <span class="panel-date" id="reviewDate">—</span>
+      </div>
+      <div class="content" id="reviewContent"><p class="empty">Loading…</p></div>
+    </section>
+
+    <section class="panel">
+      <i class="cnr tl"></i><i class="cnr tr"></i><i class="cnr bl"></i><i class="cnr br"></i>
+      <div class="panel-head">
+        <span class="panel-title">Latest Watchlist Scout</span>
+        <span class="panel-date" id="scoutDate">—</span>
+      </div>
+      <div class="content" id="scoutContent"><p class="empty">Loading…</p></div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    Pulls live from github.com/fabjon14-cmd/Jarvis-trader (claude/trading-journal) every 30s via this machine's `gh` CLI auth.
+  </footer>
+
+<script>
+function tick(){
+  document.getElementById('clock').textContent = new Date().toLocaleTimeString('en-US', { hour12:false });
+}
+tick();
+setInterval(tick, 1000);
+
+function renderPanel(prefix, section){
+  const dateEl = document.getElementById(prefix + 'Date');
+  const contentEl = document.getElementById(prefix + 'Content');
+  if (!section || !section.content){
+    dateEl.textContent = '—';
+    contentEl.innerHTML = '<p class="empty">No file found yet.</p>';
+    return;
+  }
+  dateEl.textContent = section.date;
+  contentEl.innerHTML = marked.parse(section.content);
+}
+
+async function refresh(){
+  const dot = document.getElementById('statusDot');
+  const text = document.getElementById('statusText');
+  try {
+    const res = await fetch('/api/data');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    renderPanel('journal', data.journal);
+    renderPanel('review', data.review);
+    renderPanel('scout', data.scout);
+    dot.className = 'dot live';
+    text.textContent = 'Live — fetched ' + new Date(data.fetched_at).toLocaleTimeString('en-US', { hour12:false });
+  } catch (err) {
+    dot.className = 'dot error';
+    text.textContent = 'Fetch failed: ' + err.message;
+  }
+}
+
+refresh();
+setInterval(refresh, 30000);
+</script>
+</body>
+</html>

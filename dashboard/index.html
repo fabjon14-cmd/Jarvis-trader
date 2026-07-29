@@ -105,6 +105,26 @@
     padding: 14px 28px; border-top:1px solid var(--line);
     font-size:11px; color:var(--dim); letter-spacing:0.05em;
   }
+
+  .agents{
+    display:grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 14px;
+    padding: 22px 28px 0;
+  }
+  @media (max-width: 1100px){ .agents{ grid-template-columns: repeat(2, 1fr); } }
+  .agent-card{
+    background: var(--panel-2);
+    border: 1px solid var(--line-soft);
+    padding: 12px 14px;
+  }
+  .agent-name{ font-size:11.5px; font-weight:700; letter-spacing:0.04em; margin-bottom:8px; }
+  .agent-row{ display:flex; justify-content:space-between; font-size:10.5px; color:var(--muted); margin-top:4px; }
+  .agent-row b{ color: var(--ink); font-weight:600; }
+  .agent-state{ display:flex; align-items:center; font-size:10px; letter-spacing:0.08em; text-transform:uppercase; }
+  .agent-state .dot{ background: var(--good); }
+  .agent-state.disabled .dot{ background: var(--dim); }
+  .agent-state.disabled{ color: var(--dim); }
 </style>
 </head>
 <body>
@@ -115,6 +135,8 @@
       <span id="clock">--:--:--</span>
     </div>
   </header>
+
+  <div class="agents" id="agentCards"></div>
 
   <main class="grid">
     <section class="panel">
@@ -156,6 +178,29 @@ function tick(){
 tick();
 setInterval(tick, 1000);
 
+function fmtTime(iso){
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (isNaN(d)) return '—';
+  return d.toLocaleString('en-US', { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit', hour12:false });
+}
+
+function renderAgents(routines){
+  const container = document.getElementById('agentCards');
+  if (!routines || !routines.length){
+    container.innerHTML = '<p class="empty" style="padding:0 14px;">Agent status unavailable.</p>';
+    return;
+  }
+  container.innerHTML = routines.map(r => `
+    <div class="agent-card">
+      <div class="agent-name">${r.name}</div>
+      <div class="agent-state ${r.enabled ? '' : 'disabled'}"><span class="dot"></span>${r.enabled ? 'Active' : 'Paused'}</div>
+      <div class="agent-row"><span>Last ran</span><b>${fmtTime(r.last_fired_utc)}</b></div>
+      <div class="agent-row"><span>Next run</span><b>${fmtTime(r.next_run_utc)}</b></div>
+    </div>
+  `).join('');
+}
+
 function renderPanel(prefix, section){
   const dateEl = document.getElementById(prefix + 'Date');
   const contentEl = document.getElementById(prefix + 'Content');
@@ -175,6 +220,7 @@ async function refresh(){
     const res = await fetch('/api/data');
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
+    renderAgents(data.routines);
     renderPanel('journal', data.journal);
     renderPanel('review', data.review);
     renderPanel('scout', data.scout);

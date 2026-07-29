@@ -10,7 +10,9 @@
 
 import base64
 import json
+import os
 import subprocess
+import time
 from datetime import datetime, timezone
 
 from flask import Flask, jsonify, send_from_directory
@@ -19,6 +21,13 @@ app = Flask(__name__)
 
 REPO = "fabjon14-cmd/Jarvis-trader"
 BRANCH = "claude/trading-journal"
+CLAUDE_BIN = os.path.expanduser("~/.local/bin/claude")
+
+# Routine status comes from an actual `claude -p "/schedule list"` call, which
+# takes several seconds (it's a real agent turn, not a plain API call), so we
+# cache it server-side rather than re-running it on every 30s dashboard poll.
+STATUS_CACHE_TTL = 120
+_status_cache = {"data": None, "fetched_at": 0}
 
 
 def gh_api(path):
@@ -51,6 +60,35 @@ def get_file(path):
     return base64.b64decode(data["content"]).decode("utf-8")
 
 
+def get_routine_status():
+    """Live agent status via the local `claude` CLI's own login — a real
+    /schedule list turn, not a cached API response. Cached server-side since
+    each call takes several seconds."""
+    now = time.time()
+    if _status_cache["data"] is not None and (now - _status_cache["fetched_at"]) < STATUS_CACHE_TTL:
+        return _status_cache["data"]
+
+    try:
+        result = subprocess.run(
+            [
+                CLAUDE_BIN, "-p",
+                "Run /schedule list, then output ONLY a raw JSON array (no markdown, "
+                "no code fences, no commentary) of objects with keys: name, cron, "
+                "next_run_utc, enabled, last_fired_utc (null if never/unknown).",
+            ],
+            capture_output=True, text=True, timeout=45,
+        )
+        if result.returncode == 0:
+            data = json.loads(result.stdout.strip())
+            _status_cache["data"] = data
+            _status_cache["fetched_at"] = now
+            return data
+    except Exception:
+        pass
+
+    return _status_cache["data"]  # stale (or None) rather than blocking the page on failure
+
+
 @app.route("/api/data")
 def api_data():
     journal_files = list_dir("journal")
@@ -63,6 +101,7 @@ def api_data():
 
     return jsonify({
         "fetched_at": datetime.now(timezone.utc).isoformat(),
+        "routines": get_routine_status(),
         "journal": {
             "date": latest_journal,
             "content": get_file(f"journal/{latest_journal}") if latest_journal else None,

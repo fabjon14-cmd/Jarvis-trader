@@ -7,7 +7,7 @@ account without deliberately deciding to.
 
 ## Tools available
 
-- `scripts/research.py` — `account | positions | bars SYMBOL | news SYMBOL` (read-only)
+- `scripts/research.py` — `account | positions | bars SYMBOL | news SYMBOL | orders [STATUS] | portfolio [PERIOD]` (read-only)
 - `scripts/trade.py` — `status | order SYMBOL QTY SIDE [LIMIT_PRICE] | cancel`
 - `watchlist.json` — the list of symbols in scope; don't trade outside it without being told to.
 
@@ -65,3 +65,36 @@ worked, what didn't, what to watch tomorrow.)
 If this is running as a scheduled cloud routine, commit and push the journal
 file at the end of your run — each routine starts from a fresh clone, so
 uncommitted changes won't be visible to the next one.
+
+## Weekly performance review format
+
+One file per review, `reviews/YYYY-MM-DD.md` (dated the Friday it runs), covering
+the trailing week (Mon–Fri). Ground the numbers in `scripts/research.py orders`
+(actual fills) and `scripts/research.py portfolio` (equity curve) — don't just
+re-summarize the journal's prose, compute real figures from these:
+
+```markdown
+# Week ending YYYY-MM-DD
+
+## Performance
+- Trades placed / filled / rejected this week (count each)
+- Win rate: % of closed round-trips (buy+sell pairs, or a sell of a position
+  opened this week) with positive P&L. State "N/A, no closed trades" if none.
+- Realized P&L this week (from closed round-trips) and equity change over the
+  week (from portfolio history) — these can differ if positions are still open.
+- Largest win / largest loss, if any.
+
+## Rule adherence
+Re-read this week's Trading Session journal entries against the Trading rules
+above. Flag any trade that looks like it violated a rule (sizing, earnings
+window, falling-knife, averaging down) even if the reasoning at the time
+seemed sound — this section is a check on the rules, not a re-justification
+of what was already decided.
+
+## Notes for next week
+Anything the rules should maybe adjust, any open positions or pending orders
+carrying into next week, anything to watch.
+```
+
+Same persistence rule as the journal: checkout `claude/trading-journal`, merge
+`origin/main` first, commit and push this file there when done.

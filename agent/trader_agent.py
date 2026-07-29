@@ -13,7 +13,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 
 from anthropic import Anthropic
-from research import get_account, get_positions, get_bars, get_news, get_orders, get_portfolio_history, get_earnings_date
+from research import get_account, get_positions, get_bars, get_news, get_orders, get_portfolio_history, get_earnings_date, get_movers
 from trade import place_order, cancel_all_orders, get_market_status
 
 client = Anthropic()  # reads ANTHROPIC_API_KEY from the environment
@@ -79,6 +79,16 @@ TOOLS = [
             "properties": {
                 "period": {"type": "string", "description": "e.g. '1W', '1M'", "default": "1W"},
                 "timeframe": {"type": "string", "description": "e.g. '1D', '1H'", "default": "1D"},
+            },
+        },
+    },
+    {
+        "name": "get_movers",
+        "description": "Get today's top gaining/losing stocks market-wide (not limited to the watchlist) — use for finding watchlist candidates, not for trading them directly.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "top": {"type": "integer", "description": "How many gainers and losers to return each", "default": 10},
             },
         },
     },
@@ -161,6 +171,8 @@ def run_tool(name, tool_input):
         return get_portfolio_history(tool_input.get("period", "1W"), tool_input.get("timeframe", "1D"))
     if name == "get_earnings_date":
         return get_earnings_date(tool_input["symbol"])
+    if name == "get_movers":
+        return get_movers(tool_input.get("top", 10))
 
     if name == "place_order":
         return place_order(

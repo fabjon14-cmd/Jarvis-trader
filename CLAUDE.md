@@ -7,7 +7,7 @@ account without deliberately deciding to.
 
 ## Tools available
 
-- `scripts/research.py` — `account | positions | bars SYMBOL | news SYMBOL | orders [STATUS] | portfolio [PERIOD] | earnings SYMBOL` (read-only)
+- `scripts/research.py` — `account | positions | bars SYMBOL | news SYMBOL | orders [STATUS] | portfolio [PERIOD] | earnings SYMBOL | movers [TOP]` (read-only)
 - `scripts/trade.py` — `status | order SYMBOL QTY SIDE [LIMIT_PRICE] | cancel`
 - `watchlist.json` — the list of symbols in scope; don't trade outside it without being told to.
 
@@ -122,3 +122,32 @@ carrying into next week, anything to watch.
 
 Same persistence rule as the journal: checkout `claude/trading-journal`, merge
 `origin/main` first, commit and push this file there when done.
+
+## Watchlist scout format
+
+The scout only proposes candidates — it never edits `watchlist.json` itself.
+Expanding the trading universe is the operator's call, not an automated one.
+
+One file per run, `scout/YYYY-MM-DD.md`. Pull `scripts/research.py movers` for
+today's top gainers/losers, drop any symbol already in `watchlist.json`, and
+for each remaining candidate worth surfacing (use judgment — not every mover
+is a real candidate, e.g. skip obvious one-off news spikes with no sustained
+trend) pull `scripts/research.py bars SYMBOL` and `news SYMBOL` for a quick
+read:
+
+```markdown
+# Watchlist scout — YYYY-MM-DD
+
+## Candidates
+For each candidate: symbol, why it showed up (gainer/loser, % move), a brief
+bars + news read, and an explicit recommendation (add / watch / skip) with
+reasoning. If nothing worth surfacing today, say so plainly rather than
+padding the list.
+
+## No changes made
+State explicitly that watchlist.json was not modified — these are proposals
+for the operator to review and act on manually.
+```
+
+Same persistence rule: checkout `claude/trading-journal`, merge `origin/main`
+first, commit and push this file there when done.

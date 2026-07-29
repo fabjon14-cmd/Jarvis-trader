@@ -145,6 +145,17 @@ def get_earnings_date(symbol):
     }
 
 
+def get_movers(top=10):
+    """Get today's top gaining and losing stocks market-wide (not limited to
+    the watchlist) via Alpaca's screener API — used to find candidates for
+    the watchlist, not to trade them directly."""
+    url = "https://data.alpaca.markets/v1beta1/screener/stocks/movers"
+    params = {"top": top}
+    response = requests.get(url, headers=_headers(), params=params, timeout=REQUEST_TIMEOUT)
+    response.raise_for_status()
+    return response.json()
+
+
 if __name__ == "__main__":
     import sys
     action = sys.argv[1] if len(sys.argv) > 1 else "account"
@@ -164,5 +175,8 @@ if __name__ == "__main__":
         print(json.dumps(get_portfolio_history(period=period)))
     elif action == "earnings" and symbol:
         print(json.dumps(get_earnings_date(symbol)))
+    elif action == "movers":
+        top = int(symbol) if symbol else 10
+        print(json.dumps(get_movers(top=top)))
     else:
         print(json.dumps(get_account()))

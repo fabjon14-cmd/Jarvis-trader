@@ -105,6 +105,53 @@ Enforced automatically in `place_order` for buys (`TRADER_DAILY_NOTIONAL_CAP`
 / `TRADER_WEEKLY_NOTIONAL_CAP` env vars, defaults $500 / $1,000). Sells are
 exempt — this caps new risk, not reducing existing risk.
 
+### Duplicate-order protection
+
+Before submitting any unattended order, `place_order` checks Alpaca's own
+order history (not in-memory state — that doesn't survive a crash) for an
+order already placed today with the exact same symbol/side/qty/limit_price,
+and refuses to re-submit if one exists. This exists specifically so that a
+run which crashes after submitting an order but before journaling it, then
+restarts and re-evaluates the same decision, doesn't double the position.
+You don't need to do anything extra for this — it's automatic — but if a
+placement comes back `"duplicate": true`, log it as "already placed, not
+re-submitted," not as a rejection or an error.
+
+### Confirm before treating an order as done
+
+Submitting an order successfully is not the same as it being filled.
+`place_order`'s return value tells you the real status Alpaca gave back
+(`accepted`, `pending_new`, `rejected`, etc.) — read it, don't assume. If you
+place an order and then need to make another sizing decision later in the
+same run (e.g. evaluating the next symbol's 10%-of-buying-power cap), re-run
+`scripts/research.py account` / `positions` and use the fresh numbers rather
+than mentally subtracting what you think you just spent — Alpaca reserves
+buying power on acceptance, before a fill, so the real numbers are already
+available and more trustworthy than arithmetic.
+
+### Audit trail
+
+Every decision this run makes — buy, sell, hold, or held-because-capped —
+gets logged, not just the trades that went through. For each symbol, name
+the specific rule that drove the decision and the exact data point behind
+it: `"within_48h: true"`, `"unrealized_plpc: -16.2%"`, `"sector cap: 2 already
+held in Financials"`, `"no stabilization signal: last close -1.1% vs prior"`.
+A vague "held on caution" is not enough — the goal is that "why did it hold
+Tuesday" is answerable from the journal as directly as "why did it buy
+Wednesday." This is what the weekly review actually checks against.
+
+### API/data failure handling
+
+If any check command errors, times out, or returns nothing usable — for any
+symbol, for any of `earnings`, `circuit-breaker`, `stop-loss`, `sector`,
+`bars`, or `news` — treat that symbol as unknown for this run and hold. Do
+**not** fall back to inferring from news headlines, sentiment, or anything
+else as a substitute for the failed check; that is the exact failure mode
+that let the 2026-07-29 AAPL earnings-window violation through when the
+earnings check didn't exist yet and news inference stood in for it. A
+failed check is itself information — log which command failed and why you
+held, the same as any other rule-driven hold.
+
 ## Journal format
 
 One file per day: `journal/YYYY-MM-DD.md`. Each scheduled routine appends its

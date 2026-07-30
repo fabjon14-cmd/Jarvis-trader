@@ -4,12 +4,13 @@ import os
 import requests
 import json
 import sys
+from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 
 load_dotenv()
 
-from research import get_circuit_breaker_status, get_deployed_notional, check_sector_cap
+from research import get_circuit_breaker_status, get_deployed_notional, check_sector_cap, get_orders
 
 ALPACA_KEY = os.getenv("APCA_API_KEY_ID")
 ALPACA_SECRET = os.getenv("APCA_API_SECRET_KEY")
@@ -38,6 +39,35 @@ def _headers(json_content=False):
     return headers
 
 
+def _find_duplicate_order(symbol, qty, side, limit_price):
+    """Check Alpaca's own order history — not in-memory state, which doesn't
+    survive a crash — for an order already submitted today with these exact
+    parameters. Protects against a run that crashes after submitting but
+    before journaling, then restarts and re-attempts the same decision:
+    without this, that would double the position instead of no-op'ing."""
+    today = datetime.now(timezone.utc).date()
+    for o in get_orders(status="all", limit=200):
+        if o.get("symbol") != symbol or o.get("side") != side:
+            continue
+        if o.get("status") in ("canceled", "cancelled", "rejected", "expired"):
+            continue
+        try:
+            if float(o.get("qty") or 0) != float(qty) or float(o.get("limit_price") or 0) != float(limit_price):
+                continue
+        except (TypeError, ValueError):
+            continue
+        submitted = o.get("submitted_at") or o.get("created_at")
+        if not submitted:
+            continue
+        try:
+            order_date = datetime.strptime(submitted[:10], "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if order_date == today:
+            return o
+    return None
+
+
 def confirm(prompt):
     """Approve an order. In unattended mode this auto-approves and logs the
     decision instead of blocking on input(), since there's no terminal to
@@ -56,6 +86,19 @@ def place_order(symbol, qty, side, limit_price=None):
     if UNATTENDED:
         if not limit_price:
             return {"placed": False, "reason": "Unattended runs require limit_price (no market orders)."}
+
+        try:
+            dup = _find_duplicate_order(symbol, qty, side, limit_price)
+        except Exception as exc:
+            return {"placed": False, "reason": f"Could not verify duplicate-order protection ({exc}) — holding rather than risking a double-submit."}
+        if dup:
+            return {
+                "placed": False,
+                "duplicate": True,
+                "existing_order": dup,
+                "reason": f"An identical order was already submitted today (id {dup.get('id')}, status {dup.get('status')}) — not re-submitting.",
+            }
+
         notional = float(qty) * float(limit_price)
         if notional > MAX_ORDER_NOTIONAL:
             return {

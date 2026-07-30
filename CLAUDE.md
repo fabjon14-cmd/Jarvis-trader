@@ -165,8 +165,13 @@ if it doesn't exist yet, and only fill in the section you're responsible for:
 (Morning Research fills this in: per-symbol summary of bars + news, anything notable.)
 
 ## Trading Session
-(Trading Session fills this in: decision per symbol — buy/sell/hold — with
-reasoning, and the outcome of any place_order call, including rejections.)
+(Trading Session fills this in. This routine fires hourly during market hours
+— 10am to 4pm ET, up to 7 times a day — not once. Each firing appends a
+clearly-timestamped update to this section rather than overwriting earlier
+ones: decision per symbol — buy/sell/hold — with the specific rule and data
+point behind it, and the outcome of any place_order call, including
+rejections. If a symbol's situation hasn't changed since an earlier firing
+today, say so briefly instead of re-deriving the full reasoning.)
 
 ## End of Day Reflection
 (End of Day Journal fills this in: final positions, account value, what

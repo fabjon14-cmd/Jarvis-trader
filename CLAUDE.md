@@ -7,10 +7,11 @@ account without deliberately deciding to.
 
 ## Tools available
 
-- `scripts/research.py` — `account | positions | bars SYMBOL | news SYMBOL | orders [STATUS] | portfolio [PERIOD] | earnings SYMBOL | movers [TOP]` (read-only)
+- `scripts/research.py` — `account | positions | bars SYMBOL | news SYMBOL | orders [STATUS] | portfolio [PERIOD] | earnings SYMBOL | movers [TOP] | circuit-breaker | stop-loss | sector SYMBOL | deployed` (read-only)
 - `scripts/trade.py` — `status | order SYMBOL QTY SIDE [LIMIT_PRICE] | cancel`
 - `scripts/notify.py "SUBJECT" FILE_PATH` — emails FILE_PATH's contents as the body via Resend, to `REPORT_TO_EMAIL`. Run this as the last step of every scheduled routine, pointing at the file (or section) it just wrote, so the operator gets the full report by email, not just a "ran" ping.
 - `watchlist.json` — the list of symbols in scope; don't trade outside it without being told to.
+- `sectors.json` — GICS-style sector for each watchlist symbol, backing the sector cap below.
 
 `scripts/trade.py`'s `place_order` pauses for a human y/N confirmation when run
 interactively. Under `TRADER_UNATTENDED=1` (scheduled/cloud runs) it
@@ -19,11 +20,19 @@ per run (`TRADER_MAX_ORDER_NOTIONAL`, default $2,000; `TRADER_MAX_ORDERS_PER_RUN
 default 10). A rejection under those caps is expected behavior, not a bug —
 report it in the journal rather than retrying with adjusted numbers.
 
+For buy orders specifically, `place_order` also hard-enforces the circuit
+breaker, the daily/weekly notional cap, and the sector cap below — these are
+code checks, not something a well-reasoned buy can talk its way past. If one
+of them rejects an order, that's the rule working as designed; log it and
+move on, same as any other capped rejection.
+
 ## Trading rules
 
 These are the operator's deliberately chosen rules (finalized 2026-07-29 after
-reviewing a live test run) — not placeholders, and not financial advice, just
-this bot's configured risk parameters.
+reviewing a live test run, expanded 2026-07-30 with mechanical risk controls
+after the AAPL earnings-window incident showed prose-only rules can get
+reasoned around) — not placeholders, and not financial advice, just this
+bot's configured risk parameters.
 
 - Only trade symbols in `watchlist.json`.
 - Max position size: 10% of buying power per symbol. Max 5 open positions at once.
@@ -37,14 +46,64 @@ this bot's configured risk parameters.
   the AAPL buy on 2026-07-29 slipped through despite the risk being noted in
   the same journal entry.
 - Do not buy into a sharp, uncorroborated downtrend ("falling knife") — a
-  symbol dropping hard with no stabilization signal (e.g. news of a bottom,
-  reversal in the last session or two) is a hold, not a discount.
+  symbol dropping hard with no stabilization signal is a hold, not a discount.
+  **Stabilization signal, precisely:** at least 2 consecutive daily closes at
+  or above the previous close. (Not ATR — this is the simpler, directly
+  verifiable definition from the bars data already being pulled; use it
+  consistently rather than switching to volatility-based judgment case by case.)
 - Selling is allowed, not just buying/holding: if new research turns clearly
-  negative on a symbol you currently hold (deteriorating fundamentals, a bad
-  earnings print, a broken thesis — not just short-term volatility), sell or
-  trim the position. State the specific change in research that justifies it;
-  don't sell on noise.
-- If research is inconclusive or stale (missing/failed fetch), hold — don't guess.
+  negative on a symbol you currently hold, sell or trim the position.
+  **Clearly negative, precisely:** a named, dated catalyst — a downgrade, a
+  guidance cut, a lost contract, a bad earnings print, confirmed bad news.
+  "Sentiment feels worse" or "price is down" do not qualify on their own;
+  cite the specific catalyst in the journal entry.
+- If research is inconclusive or stale, hold — don't guess. **Stale,
+  precisely:** any research input older than 5 trading days, or predating a
+  material news event for that symbol (earnings, guidance change, M&A,
+  regulatory action) — whichever is more recent.
+
+### Portfolio circuit breaker
+
+If total portfolio equity has dropped more than 4% intraday, or more than 8%
+over the trailing 5 trading days, halt all new buy orders for the rest of
+that check — existing sell/trim actions (including the stop-loss rule below)
+are still allowed and expected. Checked automatically: `place_order` calls
+`scripts/research.py circuit-breaker` before any buy and hard-rejects if
+halted, so this cannot be reasoned past — but check it explicitly yourself
+too (`scripts/research.py circuit-breaker`) before deciding whether to even
+evaluate new buys this run, so the journal reflects an intentional decision
+rather than a run of rejected orders.
+
+### Per-position stop-loss
+
+Mechanical, fires on price alone, independent of the "clearly negative
+research" selling rule above — a position can hit this with no news at all.
+Check `scripts/research.py stop-loss` at the start of every Trading Session
+run: if it flags a position, you MUST act on it (not "may"), same run:
+- **-15%** from cost basis → trim the position to half its current size.
+- **-25%** from cost basis → close the position entirely.
+Log the trigger level and the resulting order in the journal.
+
+### Sector cap
+
+No more than 2 of the (up to 5) open positions may be in the same sector
+(per `sectors.json`) at time of purchase. Check `scripts/research.py sector
+SYMBOL` before any new buy on a symbol you don't already hold — adding to an
+existing position doesn't count against this, only opening a new one does.
+Enforced automatically in `place_order` for buys, same as the circuit
+breaker; a rejection here is the rule working, not a bug to route around by
+picking a different sizing.
+
+### Daily/weekly aggregate deployment cap
+
+Max **$500** total buy notional per trading day, max **$1,000** per rolling
+7-day window — tracked as a running total from actual order history
+(`scripts/research.py deployed`), not reset by each fresh routine run. This
+caps how much new capital the bot can commit regardless of how many Trading
+Session firings happen in a day or how many symbols look attractive.
+Enforced automatically in `place_order` for buys (`TRADER_DAILY_NOTIONAL_CAP`
+/ `TRADER_WEEKLY_NOTIONAL_CAP` env vars, defaults $500 / $1,000). Sells are
+exempt — this caps new risk, not reducing existing risk.
 
 ## Journal format
 

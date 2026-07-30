@@ -9,6 +9,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+from research import get_circuit_breaker_status, get_deployed_notional, check_sector_cap
+
 ALPACA_KEY = os.getenv("APCA_API_KEY_ID")
 ALPACA_SECRET = os.getenv("APCA_API_SECRET_KEY")
 BASE_URL = os.getenv("APCA_BASE_URL", "https://paper-api.alpaca.markets")
@@ -21,6 +23,8 @@ REQUEST_TIMEOUT = 15
 UNATTENDED = os.getenv("TRADER_UNATTENDED") == "1"
 MAX_ORDER_NOTIONAL = float(os.getenv("TRADER_MAX_ORDER_NOTIONAL", "2000"))
 MAX_ORDERS_PER_RUN = int(os.getenv("TRADER_MAX_ORDERS_PER_RUN", "10"))
+DAILY_NOTIONAL_CAP = float(os.getenv("TRADER_DAILY_NOTIONAL_CAP", "500"))
+WEEKLY_NOTIONAL_CAP = float(os.getenv("TRADER_WEEKLY_NOTIONAL_CAP", "1000"))
 _orders_this_run = 0
 
 
@@ -65,6 +69,42 @@ def place_order(symbol, qty, side, limit_price=None):
                 "reason": f"Reached the {MAX_ORDERS_PER_RUN}-order cap for this run "
                           f"(set TRADER_MAX_ORDERS_PER_RUN to change).",
             }
+
+        # The three checks below only apply to buys — sells/trims reduce risk,
+        # not add it, and the circuit breaker explicitly exempts them. Each
+        # fails closed (holds) if the check itself can't be verified, same
+        # "don't guess on missing data" principle as everywhere else here.
+        if side == "buy":
+            try:
+                cb = get_circuit_breaker_status()
+            except Exception as exc:
+                return {"placed": False, "reason": f"Could not verify circuit breaker status ({exc}) — holding rather than guessing."}
+            if cb["halted"]:
+                return {"placed": False, "reason": f"Circuit breaker halted: {'; '.join(cb['reasons'])}."}
+
+            try:
+                deployed = get_deployed_notional()
+            except Exception as exc:
+                return {"placed": False, "reason": f"Could not verify daily/weekly deployed notional ({exc}) — holding rather than guessing."}
+            if deployed["daily_deployed"] + notional > DAILY_NOTIONAL_CAP:
+                return {
+                    "placed": False,
+                    "reason": f"Daily notional cap: ${deployed['daily_deployed']:,.2f} already deployed today, "
+                              f"this order (${notional:,.2f}) would exceed ${DAILY_NOTIONAL_CAP:,.2f}.",
+                }
+            if deployed["weekly_deployed"] + notional > WEEKLY_NOTIONAL_CAP:
+                return {
+                    "placed": False,
+                    "reason": f"Weekly notional cap: ${deployed['weekly_deployed']:,.2f} already deployed this week, "
+                              f"this order (${notional:,.2f}) would exceed ${WEEKLY_NOTIONAL_CAP:,.2f}.",
+                }
+
+            try:
+                sector_check = check_sector_cap(symbol)
+            except Exception as exc:
+                return {"placed": False, "reason": f"Could not verify sector cap ({exc}) — holding rather than guessing."}
+            if sector_check["blocked"]:
+                return {"placed": False, "reason": f"Sector cap: {sector_check['reason']} ({sector_check['sector']})."}
 
     price_desc = f"limit ${limit_price}" if limit_price else "at market"
     if not confirm(f"{side.upper()} {qty} {symbol} ({price_desc}) on {BASE_URL}. Approve?"):

@@ -156,6 +156,125 @@ def get_movers(top=10):
     return response.json()
 
 
+def _portfolio_pct_change(history):
+    equity = [e for e in (history.get("equity") or []) if e is not None]
+    if len(equity) < 2 or not equity[0]:
+        return None
+    return (equity[-1] - equity[0]) / equity[0] * 100
+
+
+def get_circuit_breaker_status():
+    """Portfolio-level circuit breaker: halts new buys (not sells/trims) if
+    equity has dropped more than 4% intraday or 8% over the trailing 5
+    trading days. Computed here rather than left to inference, same reason
+    as the earnings check — a precise threshold needs a precise number."""
+    intraday = get_portfolio_history(period="1D", timeframe="15Min")
+    five_day = get_portfolio_history(period="5D", timeframe="1D")
+
+    intraday_pct = _portfolio_pct_change(intraday)
+    five_day_pct = _portfolio_pct_change(five_day)
+
+    reasons = []
+    if intraday_pct is not None and intraday_pct <= -4:
+        reasons.append(f"intraday drawdown {intraday_pct:.2f}% (limit -4%)")
+    if five_day_pct is not None and five_day_pct <= -8:
+        reasons.append(f"5-trading-day drawdown {five_day_pct:.2f}% (limit -8%)")
+
+    return {
+        "halted": bool(reasons),
+        "intraday_pct": round(intraday_pct, 2) if intraday_pct is not None else None,
+        "five_day_pct": round(five_day_pct, 2) if five_day_pct is not None else None,
+        "reasons": reasons,
+    }
+
+
+def get_stop_loss_flags():
+    """Per-position mechanical stop-loss, independent of the research-based
+    selling rule — fires on price alone. -15% from cost basis: trim to half.
+    -25%: close entirely. Uses Alpaca's own unrealized_plpc, not a derived
+    calculation, so there's no room for rounding disagreements."""
+    flags = []
+    for p in get_positions():
+        plpc = float(p.get("unrealized_plpc", 0)) * 100
+        action = "close" if plpc <= -25 else ("trim_half" if plpc <= -15 else None)
+        if action:
+            flags.append({
+                "symbol": p.get("symbol"),
+                "qty": float(p.get("qty", 0)),
+                "unrealized_plpc": round(plpc, 2),
+                "action": action,
+            })
+    return flags
+
+
+_SECTOR_MAP = None
+
+
+def _load_sectors():
+    global _SECTOR_MAP
+    if _SECTOR_MAP is None:
+        path = os.path.join(os.path.dirname(__file__), "..", "sectors.json")
+        with open(path) as f:
+            _SECTOR_MAP = json.load(f)
+    return _SECTOR_MAP
+
+
+def get_sector(symbol):
+    return _load_sectors().get(symbol, "Unknown")
+
+
+def check_sector_cap(symbol):
+    """Would opening a NEW position in `symbol` push its sector above 2 of
+    the open positions? Only relevant for symbols not already held — adding
+    to an existing position doesn't change the sector count."""
+    sector = get_sector(symbol)
+    positions = get_positions()
+    held_symbols = {p["symbol"] for p in positions}
+    if symbol in held_symbols:
+        return {"symbol": symbol, "sector": sector, "blocked": False, "reason": None}
+    same_sector_count = sum(1 for p in positions if get_sector(p["symbol"]) == sector)
+    blocked = same_sector_count >= 2
+    return {
+        "symbol": symbol,
+        "sector": sector,
+        "current_same_sector_positions": same_sector_count,
+        "blocked": blocked,
+        "reason": f"already {same_sector_count} open position(s) in {sector}" if blocked else None,
+    }
+
+
+def get_deployed_notional():
+    """Sum of BUY order notional today and over the trailing 7 calendar days,
+    for the daily/weekly aggregate deployment cap. Computed from Alpaca's own
+    order history (accepted/filled only, not rejected/canceled/expired) —
+    the real source of truth for what was actually committed, rather than a
+    separately-maintained counter that could drift out of sync across runs."""
+    today = datetime.now(timezone.utc).date()
+    week_start = today - timedelta(days=7)
+
+    daily_total = 0.0
+    weekly_total = 0.0
+    for o in get_orders(status="all", limit=500):
+        if o.get("side") != "buy" or o.get("status") in ("canceled", "cancelled", "rejected", "expired"):
+            continue
+        submitted = o.get("submitted_at") or o.get("created_at")
+        if not submitted:
+            continue
+        try:
+            order_date = datetime.strptime(submitted[:10], "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        qty = float(o.get("qty") or 0)
+        price = float(o.get("limit_price") or o.get("filled_avg_price") or 0)
+        notional = qty * price
+        if order_date == today:
+            daily_total += notional
+        if order_date >= week_start:
+            weekly_total += notional
+
+    return {"daily_deployed": round(daily_total, 2), "weekly_deployed": round(weekly_total, 2)}
+
+
 if __name__ == "__main__":
     import sys
     action = sys.argv[1] if len(sys.argv) > 1 else "account"
@@ -178,5 +297,13 @@ if __name__ == "__main__":
     elif action == "movers":
         top = int(symbol) if symbol else 10
         print(json.dumps(get_movers(top=top)))
+    elif action == "circuit-breaker":
+        print(json.dumps(get_circuit_breaker_status()))
+    elif action == "stop-loss":
+        print(json.dumps(get_stop_loss_flags()))
+    elif action == "sector" and symbol:
+        print(json.dumps(check_sector_cap(symbol)))
+    elif action == "deployed":
+        print(json.dumps(get_deployed_notional()))
     else:
         print(json.dumps(get_account()))

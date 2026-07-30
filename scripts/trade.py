@@ -4,10 +4,13 @@ import os
 import requests
 import json
 import sys
+from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+from research import get_circuit_breaker_status, get_deployed_notional, check_sector_cap, get_orders
 
 ALPACA_KEY = os.getenv("APCA_API_KEY_ID")
 ALPACA_SECRET = os.getenv("APCA_API_SECRET_KEY")
@@ -21,6 +24,8 @@ REQUEST_TIMEOUT = 15
 UNATTENDED = os.getenv("TRADER_UNATTENDED") == "1"
 MAX_ORDER_NOTIONAL = float(os.getenv("TRADER_MAX_ORDER_NOTIONAL", "2000"))
 MAX_ORDERS_PER_RUN = int(os.getenv("TRADER_MAX_ORDERS_PER_RUN", "10"))
+DAILY_NOTIONAL_CAP = float(os.getenv("TRADER_DAILY_NOTIONAL_CAP", "500"))
+WEEKLY_NOTIONAL_CAP = float(os.getenv("TRADER_WEEKLY_NOTIONAL_CAP", "1000"))
 _orders_this_run = 0
 
 
@@ -32,6 +37,35 @@ def _headers(json_content=False):
     if json_content:
         headers["Content-Type"] = "application/json"
     return headers
+
+
+def _find_duplicate_order(symbol, qty, side, limit_price):
+    """Check Alpaca's own order history — not in-memory state, which doesn't
+    survive a crash — for an order already submitted today with these exact
+    parameters. Protects against a run that crashes after submitting but
+    before journaling, then restarts and re-attempts the same decision:
+    without this, that would double the position instead of no-op'ing."""
+    today = datetime.now(timezone.utc).date()
+    for o in get_orders(status="all", limit=200):
+        if o.get("symbol") != symbol or o.get("side") != side:
+            continue
+        if o.get("status") in ("canceled", "cancelled", "rejected", "expired"):
+            continue
+        try:
+            if float(o.get("qty") or 0) != float(qty) or float(o.get("limit_price") or 0) != float(limit_price):
+                continue
+        except (TypeError, ValueError):
+            continue
+        submitted = o.get("submitted_at") or o.get("created_at")
+        if not submitted:
+            continue
+        try:
+            order_date = datetime.strptime(submitted[:10], "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if order_date == today:
+            return o
+    return None
 
 
 def confirm(prompt):
@@ -52,6 +86,19 @@ def place_order(symbol, qty, side, limit_price=None):
     if UNATTENDED:
         if not limit_price:
             return {"placed": False, "reason": "Unattended runs require limit_price (no market orders)."}
+
+        try:
+            dup = _find_duplicate_order(symbol, qty, side, limit_price)
+        except Exception as exc:
+            return {"placed": False, "reason": f"Could not verify duplicate-order protection ({exc}) — holding rather than risking a double-submit."}
+        if dup:
+            return {
+                "placed": False,
+                "duplicate": True,
+                "existing_order": dup,
+                "reason": f"An identical order was already submitted today (id {dup.get('id')}, status {dup.get('status')}) — not re-submitting.",
+            }
+
         notional = float(qty) * float(limit_price)
         if notional > MAX_ORDER_NOTIONAL:
             return {
@@ -65,6 +112,42 @@ def place_order(symbol, qty, side, limit_price=None):
                 "reason": f"Reached the {MAX_ORDERS_PER_RUN}-order cap for this run "
                           f"(set TRADER_MAX_ORDERS_PER_RUN to change).",
             }
+
+        # The three checks below only apply to buys — sells/trims reduce risk,
+        # not add it, and the circuit breaker explicitly exempts them. Each
+        # fails closed (holds) if the check itself can't be verified, same
+        # "don't guess on missing data" principle as everywhere else here.
+        if side == "buy":
+            try:
+                cb = get_circuit_breaker_status()
+            except Exception as exc:
+                return {"placed": False, "reason": f"Could not verify circuit breaker status ({exc}) — holding rather than guessing."}
+            if cb["halted"]:
+                return {"placed": False, "reason": f"Circuit breaker halted: {'; '.join(cb['reasons'])}."}
+
+            try:
+                deployed = get_deployed_notional()
+            except Exception as exc:
+                return {"placed": False, "reason": f"Could not verify daily/weekly deployed notional ({exc}) — holding rather than guessing."}
+            if deployed["daily_deployed"] + notional > DAILY_NOTIONAL_CAP:
+                return {
+                    "placed": False,
+                    "reason": f"Daily notional cap: ${deployed['daily_deployed']:,.2f} already deployed today, "
+                              f"this order (${notional:,.2f}) would exceed ${DAILY_NOTIONAL_CAP:,.2f}.",
+                }
+            if deployed["weekly_deployed"] + notional > WEEKLY_NOTIONAL_CAP:
+                return {
+                    "placed": False,
+                    "reason": f"Weekly notional cap: ${deployed['weekly_deployed']:,.2f} already deployed this week, "
+                              f"this order (${notional:,.2f}) would exceed ${WEEKLY_NOTIONAL_CAP:,.2f}.",
+                }
+
+            try:
+                sector_check = check_sector_cap(symbol)
+            except Exception as exc:
+                return {"placed": False, "reason": f"Could not verify sector cap ({exc}) — holding rather than guessing."}
+            if sector_check["blocked"]:
+                return {"placed": False, "reason": f"Sector cap: {sector_check['reason']} ({sector_check['sector']})."}
 
     price_desc = f"limit ${limit_price}" if limit_price else "at market"
     if not confirm(f"{side.upper()} {qty} {symbol} ({price_desc}) on {BASE_URL}. Approve?"):

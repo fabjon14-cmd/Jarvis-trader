@@ -62,6 +62,20 @@ bot's configured risk parameters.
   material news event for that symbol (earnings, guidance change, M&A,
   regulatory action) — whichever is more recent.
 
+### Balanced allocation across opportunities
+
+Evaluate all 32 symbols before placing anything, not just up to whichever
+symbol first clears the bar — don't exhaust the daily/weekly budget on the
+first acceptable candidate you reach in watchlist order. If more than one
+symbol genuinely clears the buy bar this run, rank them by conviction (the
+strength and freshness of the catalyst, not just "passes the rules") and
+spread available capital across the strongest 2-4 rather than concentrating
+it all into one — subject to the existing per-symbol 10%-of-buying-power cap,
+the 5-position cap, and the sector cap, which already prevent overconcentration
+in a single name or sector. State the ranking/comparison in the journal, not
+just the individual pass/fail per symbol, so "why this one over that one" is
+answerable, not just "why this one."
+
 ### Portfolio circuit breaker
 
 If total portfolio equity has dropped more than 4% intraday, or more than 8%
@@ -96,14 +110,21 @@ picking a different sizing.
 
 ### Daily/weekly aggregate deployment cap
 
-Max **$500** total buy notional per trading day, max **$1,000** per rolling
-7-day window — tracked as a running total from actual order history
-(`scripts/research.py deployed`), not reset by each fresh routine run. This
-caps how much new capital the bot can commit regardless of how many Trading
-Session firings happen in a day or how many symbols look attractive.
-Enforced automatically in `place_order` for buys (`TRADER_DAILY_NOTIONAL_CAP`
-/ `TRADER_WEEKLY_NOTIONAL_CAP` env vars, defaults $500 / $1,000). Sells are
-exempt — this caps new risk, not reducing existing risk.
+Max **$500** total buy notional per trading day. Weekly cap is currently
+**$3,000** per rolling 7-day window (`TRADER_WEEKLY_NOTIONAL_CAP` env var) —
+raised from the original $1,000 as a deliberate, temporary trial starting
+2026-07-30, after the $1,000 default blocked all new buying for the rest of
+the week following a single $1,702.50 fill. Reassess around **2026-08-05**
+(when that original fill rolls off the 7-day window anyway) whether $3,000 is
+the right steady-state number or the trial should revert to $1,000 — this is
+not meant to be a silent permanent increase.
+
+Tracked as a running total from actual order history (`scripts/research.py
+deployed`), not reset by each fresh routine run — caps how much new capital
+the bot can commit regardless of how many Trading Session firings happen in a
+day or how many symbols look attractive. Enforced automatically in
+`place_order` for buys. Sells are exempt — this caps new risk, not reducing
+existing risk.
 
 ### Duplicate-order protection
 

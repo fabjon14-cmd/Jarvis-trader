@@ -275,6 +275,61 @@ def get_deployed_notional():
     return {"daily_deployed": round(daily_total, 2), "weekly_deployed": round(weekly_total, 2)}
 
 
+def get_day_trade_count(lookback_business_days=5):
+    """Count same-symbol same-day round trips (buy+sell or sell+buy on the
+    same calendar day) over the trailing N business days, for PDT
+    live-readiness tracking. Paper accounts don't enforce PDT, so this is
+    informational only — not a gate — but it means a pattern is visible in
+    the journal before it would ever matter on a live account."""
+    cutoff = datetime.now(timezone.utc).date() - timedelta(days=lookback_business_days * 2)
+    by_symbol_day = {}
+    for o in get_orders(status="all", limit=500):
+        if o.get("status") in ("canceled", "cancelled", "rejected", "expired"):
+            continue
+        submitted = o.get("submitted_at") or o.get("created_at")
+        symbol = o.get("symbol")
+        side = o.get("side")
+        if not submitted or not symbol or not side:
+            continue
+        try:
+            order_date = datetime.strptime(submitted[:10], "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if order_date < cutoff:
+            continue
+        key = (symbol, order_date)
+        by_symbol_day.setdefault(key, set()).add(side)
+
+    day_trades = [
+        {"symbol": symbol, "date": date.isoformat()}
+        for (symbol, date), sides in by_symbol_day.items()
+        if {"buy", "sell"}.issubset(sides)
+    ]
+    return {"count": len(day_trades), "trades": day_trades}
+
+
+def would_be_day_trade(symbol, side):
+    """Would placing `side` for `symbol` right now complete a same-day round
+    trip (the opposite side already happened today for this symbol)?"""
+    today = datetime.now(timezone.utc).date()
+    opposite = "sell" if side == "buy" else "buy"
+    for o in get_orders(status="all", limit=200):
+        if o.get("symbol") != symbol or o.get("side") != opposite:
+            continue
+        if o.get("status") in ("canceled", "cancelled", "rejected", "expired"):
+            continue
+        submitted = o.get("submitted_at") or o.get("created_at")
+        if not submitted:
+            continue
+        try:
+            order_date = datetime.strptime(submitted[:10], "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if order_date == today:
+            return True
+    return False
+
+
 if __name__ == "__main__":
     import sys
     action = sys.argv[1] if len(sys.argv) > 1 else "account"
@@ -305,5 +360,7 @@ if __name__ == "__main__":
         print(json.dumps(check_sector_cap(symbol)))
     elif action == "deployed":
         print(json.dumps(get_deployed_notional()))
+    elif action == "day-trades":
+        print(json.dumps(get_day_trade_count()))
     else:
         print(json.dumps(get_account()))

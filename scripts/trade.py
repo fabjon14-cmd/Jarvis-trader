@@ -187,7 +187,12 @@ def place_order(symbol, qty, side, limit_price=None):
 
     url = f"{BASE_URL}/v2/orders"
     response = requests.post(url, headers=headers, json=order_data, timeout=REQUEST_TIMEOUT)
-    response.raise_for_status()
+    if not response.ok:
+        # Fractional qty introduces a real rejection path that whole-share
+        # orders rarely hit (e.g. the symbol isn't fractionable on Alpaca) —
+        # return it as a clean, loggable rejection like any other capped
+        # order instead of letting an HTTPError traceback surface.
+        return {"placed": False, "reason": f"Alpaca rejected the order ({response.status_code}): {response.text}"}
     if UNATTENDED:
         _orders_this_run += 1
     return {**response.json(), **day_trade_info}

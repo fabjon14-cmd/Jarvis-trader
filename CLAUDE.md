@@ -108,6 +108,25 @@ symbols priced at or below that headroom rather than the full watchlist —
 same logic Trading Session already applied informally on 2026-07-31
 (firings 4-6), now made an explicit step instead of an ad hoc shortcut.
 
+### Fractional-share sizing
+
+Whole-share `qty` frequently leaves real budget unused — e.g. on 2026-08-03,
+~$175 of remaining daily headroom sat idle for 5 straight firings because
+AMZN/TSLA's share price exceeded it outright. `place_order` already accepts
+fractional `qty` values (e.g. `qty="0.35"`) with no code change needed —
+Alpaca supports fractional-share limit orders for eligible ("fractionable")
+symbols. When a candidate clears every other check but a full share would
+exceed the 5%-of-buying-power cap or the remaining daily/weekly headroom,
+size a fractional share instead of skipping it outright:
+`qty = round(available_budget / price, 4)`. This also matters for an
+eventual live £500 account, where a single 5%-of-buying-power position (£25)
+is smaller than one share of most of the watchlist — whole-share-only sizing
+would make most of the watchlist unbuyable regardless of signal strength. If
+Alpaca rejects the order (e.g. the symbol isn't fractionable), `place_order`
+returns a clean `{"placed": false, "reason": ...}` rather than crashing —
+treat it like any other rejection: log the reason and hold, don't retry with
+a different size without re-evaluating.
+
 ### Portfolio circuit breaker
 
 If total portfolio equity has dropped more than 4% intraday, or more than 8%

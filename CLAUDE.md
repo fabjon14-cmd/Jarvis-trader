@@ -7,7 +7,7 @@ account without deliberately deciding to.
 
 ## Tools available
 
-- `scripts/research.py` — `account | positions | bars SYMBOL | news SYMBOL | orders [STATUS] | portfolio [PERIOD] | earnings SYMBOL | movers [TOP] | circuit-breaker | stop-loss | sector SYMBOL | deployed` (read-only)
+- `scripts/research.py` — `account | positions | bars SYMBOL | news SYMBOL | orders [STATUS] | portfolio [PERIOD] | earnings SYMBOL | movers [TOP] | circuit-breaker | stop-loss | sector SYMBOL | deployed | day-trades` (read-only)
 - `scripts/trade.py` — `status | order SYMBOL QTY SIDE [LIMIT_PRICE] | cancel`
 - `scripts/notify.py "SUBJECT" FILE_PATH` — emails FILE_PATH's contents as the body via Resend, to `REPORT_TO_EMAIL`. Run this as the last step of every scheduled routine, pointing at the file (or section) it just wrote, so the operator gets the full report by email, not just a "ran" ping.
 - `watchlist.json` — the list of symbols in scope; don't trade outside it without being told to.
@@ -51,6 +51,16 @@ bot's configured risk parameters.
   or above the previous close. (Not ATR — this is the simpler, directly
   verifiable definition from the bars data already being pulled; use it
   consistently rather than switching to volatility-based judgment case by case.)
+  **Completed closes only:** during market hours the "today" bar from
+  `scripts/research.py bars` is still forming — a stock trading up at 10am
+  can close down by 4pm. Never count today's intraday price as one of the
+  2 required closes; use only the last 2 *fully completed* prior trading
+  days (e.g. evaluating intraday on a Friday, compare Wednesday's close vs.
+  Thursday's close, not Thursday vs. today). Today's intraday move is fine
+  to mention as color, but it does not satisfy this rule until that day's
+  session ends and the bar finalizes. (Flagged 2026-08-01 after review of
+  the 2026-07-31 session, where AMZN/ORCL/BAC buys used that day's own
+  still-forming intraday price as a "close.")
 - Selling is allowed, not just buying/holding: if new research turns clearly
   negative on a symbol you currently hold, sell or trim the position.
   **Clearly negative, precisely:** a named, dated catalyst — a downgrade, a
@@ -75,6 +85,25 @@ the 5-position cap, and the sector cap, which already prevent overconcentration
 in a single name or sector. State the ranking/comparison in the journal, not
 just the individual pass/fail per symbol, so "why this one over that one" is
 answerable, not just "why this one."
+
+### Budget-aware evaluation (efficiency)
+
+Before pulling fresh bars/news for all 32 symbols to evaluate new buys, check
+`scripts/research.py deployed` first and compute today's remaining daily
+headroom (`$500 - daily_deployed`, or less if weekly headroom is tighter).
+If that headroom is below the price of the cheapest realistically-affordable
+watchlist symbol, skip the full per-symbol new-buy sweep entirely and log one
+line — e.g. "Daily headroom $12.40 remaining — below any realistic
+single-share buy, skipping new-buy evaluation this firing" — instead of
+re-deriving stabilization/earnings/sector detail for 32 symbols that are
+budget-moot regardless of their signal. This does not apply to the
+stop-loss or circuit-breaker checks, which always run in full every firing
+regardless of budget — this is purely about not wasting a full research
+sweep when the answer is going to be "can't afford anything" no matter what
+the sweep finds. When there is real headroom, only pull fresh bars/news for
+symbols priced at or below that headroom rather than the full watchlist —
+same logic Trading Session already applied informally on 2026-07-31
+(firings 4-6), now made an explicit step instead of an ad hoc shortcut.
 
 ### Portfolio circuit breaker
 
@@ -137,6 +166,22 @@ restarts and re-evaluates the same decision, doesn't double the position.
 You don't need to do anything extra for this — it's automatic — but if a
 placement comes back `"duplicate": true`, log it as "already placed, not
 re-submitted," not as a rejection or an error.
+
+### Day-trade tracking (live-readiness, not yet enforced)
+
+Paper accounts have no Pattern Day Trader (PDT) rule, but a real US equities
+account under $25,000 is capped at 3 day trades (buying and selling — or
+selling then buying — the *same* symbol on the *same* calendar day) per
+rolling 5 business days. Nothing about paper trading requires this bot to
+respect that cap today, but so it isn't a surprise if this account is ever
+made live, `place_order` now tracks it: if an order would create a same-day
+round trip on a symbol (a buy where a sell already happened today, or vice
+versa), the response includes `"day_trade": true` and the resulting trailing-
+5-business-day day-trade count. This is **logged, not blocking** — it must
+never prevent a mandatory stop-loss trim/close (see above), and PDT doesn't
+apply to this paper account regardless. If a day trade is logged, note the
+count in the journal so a pattern building up over time is visible before it
+would ever matter.
 
 ### Confirm before treating an order as done
 

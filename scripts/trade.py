@@ -10,7 +10,14 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from research import get_circuit_breaker_status, get_deployed_notional, check_sector_cap, get_orders
+from research import (
+    get_circuit_breaker_status,
+    get_deployed_notional,
+    check_sector_cap,
+    get_orders,
+    would_be_day_trade,
+    get_day_trade_count,
+)
 
 ALPACA_KEY = os.getenv("APCA_API_KEY_ID")
 ALPACA_SECRET = os.getenv("APCA_API_SECRET_KEY")
@@ -149,6 +156,18 @@ def place_order(symbol, qty, side, limit_price=None):
             if sector_check["blocked"]:
                 return {"placed": False, "reason": f"Sector cap: {sector_check['reason']} ({sector_check['sector']})."}
 
+    # Informational only (see CLAUDE.md "Day-trade tracking") — never blocks,
+    # since it must not stand in the way of a mandatory stop-loss trim/close,
+    # and PDT doesn't apply to this paper account anyway. Failing to compute
+    # this is not a reason to hold, unlike the hard gates above.
+    day_trade_info = {}
+    if UNATTENDED:
+        try:
+            if would_be_day_trade(symbol, side):
+                day_trade_info = {"day_trade": True, "trailing_5bd_count": get_day_trade_count()["count"]}
+        except Exception:
+            pass
+
     price_desc = f"limit ${limit_price}" if limit_price else "at market"
     if not confirm(f"{side.upper()} {qty} {symbol} ({price_desc}) on {BASE_URL}. Approve?"):
         return {"placed": False, "reason": "Declined."}
@@ -171,7 +190,7 @@ def place_order(symbol, qty, side, limit_price=None):
     response.raise_for_status()
     if UNATTENDED:
         _orders_this_run += 1
-    return response.json()
+    return {**response.json(), **day_trade_info}
 
 
 def cancel_all_orders():

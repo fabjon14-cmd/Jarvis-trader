@@ -3,6 +3,7 @@
 import os
 import requests
 import json
+import time
 from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
@@ -125,8 +126,23 @@ def get_earnings_date(symbol):
         "symbol": symbol,
         "token": FINNHUB_KEY,
     }
-    response = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
-    response.raise_for_status()
+    # This endpoint has shown recurring transient ReadTimeouts (4 of 7 Trading
+    # Session firings on 2026-08-03) that always cleared on a retry. Retry
+    # automatically here rather than relying on the calling agent to notice
+    # and re-run the check — still fails closed (raises, caller holds) if
+    # both attempts fail, same as any other data-failure.
+    last_exc = None
+    for attempt in range(2):
+        try:
+            response = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
+            response.raise_for_status()
+            break
+        except requests.exceptions.RequestException as exc:
+            last_exc = exc
+            if attempt == 0:
+                time.sleep(2)
+    else:
+        raise last_exc
     calendar = response.json().get("earningsCalendar") or []
 
     if not calendar:

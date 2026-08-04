@@ -35,7 +35,10 @@ reasoned around) — not placeholders, and not financial advice, just this
 bot's configured risk parameters.
 
 - Only trade symbols in `watchlist.json`.
-- Max position size: 10% of buying power per symbol. Max 5 open positions at once.
+- Max position size: 5% of buying power per symbol (lowered from 10% on
+  2026-08-03 — deliberately more conservative sizing, chosen with an eventual
+  live £500 account in mind, so it gets real trial history on paper before
+  ever running with real money). Max 5 open positions at once.
 - Limit orders only in unattended runs (enforced in code, see above).
 - No adding to a losing position ("averaging down").
 - Do not open a new position within 48h of a symbol's earnings report — event
@@ -80,7 +83,7 @@ first acceptable candidate you reach in watchlist order. If more than one
 symbol genuinely clears the buy bar this run, rank them by conviction (the
 strength and freshness of the catalyst, not just "passes the rules") and
 spread available capital across the strongest 2-4 rather than concentrating
-it all into one — subject to the existing per-symbol 10%-of-buying-power cap,
+it all into one — subject to the existing per-symbol 5%-of-buying-power cap,
 the 5-position cap, and the sector cap, which already prevent overconcentration
 in a single name or sector. State the ranking/comparison in the journal, not
 just the individual pass/fail per symbol, so "why this one over that one" is
@@ -104,6 +107,25 @@ the sweep finds. When there is real headroom, only pull fresh bars/news for
 symbols priced at or below that headroom rather than the full watchlist —
 same logic Trading Session already applied informally on 2026-07-31
 (firings 4-6), now made an explicit step instead of an ad hoc shortcut.
+
+### Fractional-share sizing
+
+Whole-share `qty` frequently leaves real budget unused — e.g. on 2026-08-03,
+~$175 of remaining daily headroom sat idle for 5 straight firings because
+AMZN/TSLA's share price exceeded it outright. `place_order` already accepts
+fractional `qty` values (e.g. `qty="0.35"`) with no code change needed —
+Alpaca supports fractional-share limit orders for eligible ("fractionable")
+symbols. When a candidate clears every other check but a full share would
+exceed the 5%-of-buying-power cap or the remaining daily/weekly headroom,
+size a fractional share instead of skipping it outright:
+`qty = round(available_budget / price, 4)`. This also matters for an
+eventual live £500 account, where a single 5%-of-buying-power position (£25)
+is smaller than one share of most of the watchlist — whole-share-only sizing
+would make most of the watchlist unbuyable regardless of signal strength. If
+Alpaca rejects the order (e.g. the symbol isn't fractionable), `place_order`
+returns a clean `{"placed": false, "reason": ...}` rather than crashing —
+treat it like any other rejection: log the reason and hold, don't retry with
+a different size without re-evaluating.
 
 ### Portfolio circuit breaker
 
@@ -189,7 +211,7 @@ Submitting an order successfully is not the same as it being filled.
 `place_order`'s return value tells you the real status Alpaca gave back
 (`accepted`, `pending_new`, `rejected`, etc.) — read it, don't assume. If you
 place an order and then need to make another sizing decision later in the
-same run (e.g. evaluating the next symbol's 10%-of-buying-power cap), re-run
+same run (e.g. evaluating the next symbol's 5%-of-buying-power cap), re-run
 `scripts/research.py account` / `positions` and use the fresh numbers rather
 than mentally subtracting what you think you just spent — Alpaca reserves
 buying power on acceptance, before a fill, so the real numbers are already

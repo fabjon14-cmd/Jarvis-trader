@@ -1,0 +1,33 @@
+name: Crypto Scalper Hourly Digest
+
+# Top of every hour. Emails a summary of any buy/sell orders from the last
+# 60 minutes — but only if something actually happened; a silent hour sends
+# nothing (no heartbeat spam). See crypto-scalper/CLAUDE.md "Hourly digest".
+on:
+  schedule:
+    - cron: "0 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests python-dotenv
+
+      - name: Build and send digest
+        env:
+          CRYPTO_APCA_API_KEY_ID: ${{ secrets.CRYPTO_APCA_API_KEY_ID }}
+          CRYPTO_APCA_API_SECRET_KEY: ${{ secrets.CRYPTO_APCA_API_SECRET_KEY }}
+          CRYPTO_APCA_BASE_URL: ${{ secrets.CRYPTO_APCA_BASE_URL }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          REPORT_TO_EMAIL: ${{ secrets.REPORT_TO_EMAIL }}
+        run: python3 crypto-scalper/scripts/hourly_digest.py

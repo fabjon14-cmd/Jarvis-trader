@@ -23,6 +23,7 @@ capital.
 - `watchlist.json` — crypto pairs in scope: `BTC/USD`, `ETH/USD`, `SOL/USD`, `AVAX/USD`, `DOT/USD`, `LINK/USD`, `UNI/USD`, `DOGE/USD` (expanded from the original 3 on 2026-08-05 so the category cap below has more than one category to actually enforce across). Don't trade pairs outside it without being told to.
 - `categories.json` — category per pair (`Layer1`, `DeFi`, `Meme`), backing the category cap below. Mirrors the equities bot's `sectors.json` pattern.
 - `../scripts/notify.py` (shared with the equities bot) — email the day's journal. Call this **at most once a day** (e.g. after the last scheduled firing), not every run — this agent fires far more often than the equities bot's hourly cadence, and per-run emails would be spam.
+- `scripts/hourly_digest.py` — emails a summary of any buy/sell activity in the last hour, via the shared `notify.py`. Sends nothing if there was no activity. Scheduled hourly via `.github/workflows/crypto-scalper-hourly-digest.yml`. See "Hourly digest" below.
 
 `scripts/trade.py`'s `place_order` pauses for a human y/N confirmation when
 run interactively. Under `CRYPTO_SCALPER_UNATTENDED=1` (scheduled/cloud runs)
@@ -276,6 +277,27 @@ qualitative read. The output says so explicitly rather than silently
 omitting it. If a qualitative review is wanted later, that's a different
 execution model (an actual agent run, like the equities Routines) — not
 something to fake with more Python.
+
+## Hourly digest (added 2026-08-05)
+
+`.github/workflows/crypto-scalper-hourly-digest.yml` runs
+`scripts/hourly_digest.py` at the top of every hour. It reads Alpaca's own
+order history (not the journal) for orders in the last 60 minutes,
+excluding rejected/canceled/expired ones — a rejection means it did NOT
+buy or sell, which isn't the "did it trade" signal this is for. If nothing
+filled in that window, **it sends nothing** — a deliberate choice (operator
+decision, 2026-08-05) over an always-send heartbeat, since most hours have
+had zero trades so far and an empty-every-hour email would mostly be noise.
+Email only (SMS/WhatsApp were considered and declined — both need a new
+paid third-party account, while email reuses the existing free Resend
+setup already wired into `../scripts/notify.py`).
+
+Needs `RESEND_API_KEY` and `REPORT_TO_EMAIL` as GitHub Actions repository
+secrets — the same Resend account as the equities bot works fine, but the
+key has to be re-added here specifically, since the equities bot's copy
+lives in Claude's Routines environment, not GitHub Actions secrets. Set
+via `gh secret set RESEND_API_KEY --repo fabjon14-cmd/Jarvis-trader` and
+`gh secret set REPORT_TO_EMAIL --repo fabjon14-cmd/Jarvis-trader`.
 
 ## Setup notes
 

@@ -1,0 +1,36 @@
+name: Crypto Scalper Backtest
+
+# On-demand only — not scheduled. Replays the live signal/exit logic
+# bar-by-bar over historical data to check whether the strategy has any
+# edge before trusting further forward-testing. See
+# crypto-scalper/scripts/backtest.py and crypto-scalper/CLAUDE.md
+# "Backtesting" for what this does and doesn't model.
+on:
+  workflow_dispatch:
+    inputs:
+      lookback_days:
+        description: "How many days of historical 5-minute bars to test"
+        required: false
+        default: "60"
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests python-dotenv
+
+      - name: Run backtest
+        env:
+          CRYPTO_APCA_API_KEY_ID: ${{ secrets.CRYPTO_APCA_API_KEY_ID }}
+          CRYPTO_APCA_API_SECRET_KEY: ${{ secrets.CRYPTO_APCA_API_SECRET_KEY }}
+          CRYPTO_APCA_BASE_URL: ${{ secrets.CRYPTO_APCA_BASE_URL }}
+        run: python3 crypto-scalper/scripts/backtest.py "${{ github.event.inputs.lookback_days || 60 }}"

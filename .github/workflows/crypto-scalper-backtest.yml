@@ -12,6 +12,10 @@ on:
         description: "How many days of historical 5-minute bars to test"
         required: false
         default: "60"
+      detail_pair:
+        description: "Optional: pair to show full trade-by-trade detail for (e.g. AVAX/USD), instead of the aggregate report"
+        required: false
+        default: ""
 
 jobs:
   backtest:
@@ -33,4 +37,9 @@ jobs:
           CRYPTO_APCA_API_KEY_ID: ${{ secrets.CRYPTO_APCA_API_KEY_ID }}
           CRYPTO_APCA_API_SECRET_KEY: ${{ secrets.CRYPTO_APCA_API_SECRET_KEY }}
           CRYPTO_APCA_BASE_URL: ${{ secrets.CRYPTO_APCA_BASE_URL }}
-        run: python3 crypto-scalper/scripts/backtest.py "${{ github.event.inputs.lookback_days || 60 }}"
+        run: |
+          if [ -n "${{ github.event.inputs.detail_pair }}" ]; then
+            python3 crypto-scalper/scripts/backtest.py detail "${{ github.event.inputs.detail_pair }}" "${{ github.event.inputs.lookback_days || 60 }}"
+          else
+            python3 crypto-scalper/scripts/backtest.py "${{ github.event.inputs.lookback_days || 60 }}"
+          fi

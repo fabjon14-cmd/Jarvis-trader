@@ -257,13 +257,33 @@ def run_backtest(lookback_days=60):
     for t in all_trades:
         exit_reason_counts[t["exit_reason"]] = exit_reason_counts.get(t["exit_reason"], 0) + 1
 
+    # Breaks out avg return BY exit reason — a stop-loss's return is fixed
+    # by definition (-STOP_LOSS_PCT, minus the market-order assumption), so
+    # this is really asking "how much is the timeout bucket dragging the
+    # average down" vs "is take-profit pulling its weight".
+    avg_return_by_exit_reason = {}
+    for reason in exit_reason_counts:
+        reason_trades = [t for t in all_trades if t["exit_reason"] == reason]
+        avg_return_by_exit_reason[reason] = {
+            "count": len(reason_trades),
+            "avg_return_pct": round(sum(t["pnl_pct"] for t in reason_trades) / len(reason_trades), 4),
+        }
+
     per_pair = {}
     for pair in pairs:
         pair_trades = [t for t in all_trades if t["pair"] == pair]
+        pair_exit_breakdown = {}
+        for reason in set(t["exit_reason"] for t in pair_trades):
+            reason_trades = [t for t in pair_trades if t["exit_reason"] == reason]
+            pair_exit_breakdown[reason] = {
+                "count": len(reason_trades),
+                "avg_return_pct": round(sum(t["pnl_pct"] for t in reason_trades) / len(reason_trades), 4),
+            }
         per_pair[pair] = {
             "trades": len(pair_trades),
             "win_rate_pct": round(len([t for t in pair_trades if t["pnl_pct"] > 0]) / len(pair_trades) * 100, 1) if pair_trades else None,
             "avg_return_pct": round(sum(t["pnl_pct"] for t in pair_trades) / len(pair_trades), 4) if pair_trades else None,
+            "exit_breakdown": pair_exit_breakdown,
         }
 
     # BTC buy-and-hold benchmark over the same historical window
@@ -280,6 +300,7 @@ def run_backtest(lookback_days=60):
         "cumulative_return_pct_compounded": cumulative_compounded_pct,
         "max_drawdown_pct": round(max_drawdown_pct, 2),
         "exit_reason_counts": exit_reason_counts,
+        "avg_return_by_exit_reason": avg_return_by_exit_reason,
         "per_pair": per_pair,
         "btc_buy_and_hold_pct_same_window": btc_buy_and_hold_pct,
         "scope_note": (
@@ -297,7 +318,29 @@ def run_backtest(lookback_days=60):
     }
 
 
+def detail_pair(pair, lookback_days=60):
+    """Full trade list for one pair — for inspecting an outlier's actual
+    entries/exits, not just its aggregate stats."""
+    bars = fetch_historical_bars(pair, lookback_days=lookback_days)
+    hour_bars = fetch_historical_bars(pair, timeframe="1Hour", lookback_days=lookback_days + 5)
+    trades = simulate_pair(pair, bars, hour_bars)
+    trades_sorted = sorted(trades, key=lambda t: t["pnl_pct"])
+    return {
+        "pair": pair,
+        "lookback_days": lookback_days,
+        "total_trades": len(trades),
+        "worst_10": trades_sorted[:10],
+        "best_10": trades_sorted[-10:],
+        "all_trades": trades,
+    }
+
+
 if __name__ == "__main__":
-    lookback = int(sys.argv[1]) if len(sys.argv) > 1 else 60
-    result = run_backtest(lookback)
-    print(json.dumps(result, indent=2))
+    if len(sys.argv) > 1 and sys.argv[1] == "detail":
+        pair = sys.argv[2] if len(sys.argv) > 2 else "BTC/USD"
+        lookback = int(sys.argv[3]) if len(sys.argv) > 3 else 60
+        print(json.dumps(detail_pair(pair, lookback), indent=2))
+    else:
+        lookback = int(sys.argv[1]) if len(sys.argv) > 1 else 60
+        result = run_backtest(lookback)
+        print(json.dumps(result, indent=2))

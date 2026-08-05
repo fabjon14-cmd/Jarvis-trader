@@ -1,21 +1,30 @@
 # crypto-scalper/scripts/backtest.py
 #
-# Backtests the exact signal logic in research.get_signal() (RSI(14) < 30 +
-# EMA20 cross-above on 5-minute bars + EMA20>EMA50 on 1-HOUR bars + no ATR
-# volatility spike) and the exact exit logic in research.get_exit_flags()
-# (+1.5% TP / -0.75% SL / 4h timeout), replayed bar-by-bar over historical
-# candles with no look-ahead: at 5-minute bar i, only bars[0..i] (and only
-# 1-hour bars that had actually closed by that point in time) are used to
-# decide anything about bar i.
+# Backtests the exact signal logic in research.get_signal() (RSI(14)
+# touched <30 within a lookback window + EMA20 cross-above on 5-minute
+# bars + EMA20>EMA50 on 1-HOUR bars + no ATR volatility spike) and the
+# exact exit logic in research.get_exit_flags() (+1.5% TP / -0.75% SL / 4h
+# timeout), replayed bar-by-bar over historical candles with no
+# look-ahead: at 5-minute bar i, only bars[0..i] (and only 1-hour bars
+# that had actually closed by that point in time) are used to decide
+# anything about bar i.
 #
-# The original same-timeframe design (RSI + both EMAs all on 5-minute bars)
-# was backtested first and produced ZERO trades across 60 days / 136k bars
-# — a real 5-minute RSI-oversold dip usually also drags the fast 5-min
-# EMA(20) below the 5-min EMA(50) at the same time, making "oversold" and
-# "still bullish-aligned" nearly mutually exclusive on one fast timeframe.
-# Moving the alignment check to 1-hour bars (2026-08-05) fixes that: an
-# hourly EMA reacts far more slowly, so a brief 5-minute dip doesn't also
-# flip the hourly trend.
+# Two fixes were needed to get here, both discovered by backtesting the
+# PRIOR version and finding zero trades, not by guessing:
+# 1. The original same-timeframe design (RSI + both EMAs all on 5-minute
+#    bars) produced ZERO trades across 60 days / 136k bars — a real
+#    5-minute RSI-oversold dip usually also drags the fast 5-min EMA(20)
+#    below the 5-min EMA(50) at the same time. Moving the alignment check
+#    to 1-hour bars fixed the trend-filter side of this.
+# 2. That alone STILL produced zero trades. A diagnostic
+#    (scripts/diagnose_signal.py) found the real bottleneck: RSI and the
+#    EMA20 cross-above almost never land on the same bar — RSI recovers
+#    to 50-65 well before price actually crosses back above its own
+#    lagging 20-period EMA. Requiring same-bar simultaneity is what
+#    produced zero trades, not the trend filter. Fixed by checking
+#    whether RSI touched <30 at any point in the last
+#    CRYPTO_RSI_LOOKBACK_BARS bars (default 12 = 1 hour), rather than on
+#    the exact same bar as the cross.
 #
 # Deliberately scoped to "does the signal itself have edge" — it does NOT
 # simulate the daily/weekly notional caps, max-positions, category caps, or
@@ -174,10 +183,10 @@ def simulate_pair(pair, bars, hour_bars):
         window_bars = bars[max(0, i + 1 - EMA_WINDOW_BARS):i + 1]
         window_closes = [b["c"] for b in window_bars]
 
-        rsi = research.compute_rsi(window_closes, 14)
+        rsi_series = research.compute_rsi_series(window_closes, 14)
         ema20_series = research.compute_ema_series(window_closes, 20)
         atr_series = research.compute_atr_series(window_bars, 14)
-        if rsi is None or len(ema20_series) < 2 or len(atr_series) < 20:
+        if not rsi_series or len(ema20_series) < 2 or len(atr_series) < 20:
             continue
 
         alignment = lookup_1h_alignment(alignment_lookup, _bar_time(bar))
@@ -185,14 +194,16 @@ def simulate_pair(pair, bars, hour_bars):
             continue  # no 1-hour bar had closed yet at this point in history
         ema20_1h, ema50_1h = alignment
 
+        rsi_lookback_window = rsi_series[-research.RSI_LOOKBACK_BARS:]
+        rsi_recently_oversold = min(rsi_lookback_window) < 30
+
         prev_close, curr_close = closes[i - 1], closes[i]
         crossed_above = prev_close <= ema20_series[-2] and curr_close > ema20_series[-1]
-        rsi_oversold = rsi < 30
         ema_alignment_bullish = ema20_1h > ema50_1h
         atr_avg20 = sum(atr_series[-20:]) / 20
         atr_volatility_spike = atr_avg20 > 0 and atr_series[-1] > research.ATR_SPIKE_MULTIPLE * atr_avg20
 
-        if rsi_oversold and crossed_above and ema_alignment_bullish and not atr_volatility_spike:
+        if rsi_recently_oversold and crossed_above and ema_alignment_bullish and not atr_volatility_spike:
             entry_price = curr_close * (1 + LIMIT_SLIPPAGE_BUFFER)
             position = {
                 "entry_idx": i,

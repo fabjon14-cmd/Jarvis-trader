@@ -74,6 +74,16 @@ def build_digest():
 
 
 if __name__ == "__main__":
+    if "--test" in sys.argv:
+        # One-off, bypasses the "only if something happened" gate (and
+        # doesn't even touch Alpaca) — for confirming RESEND_API_KEY/
+        # REPORT_TO_EMAIL actually work, not for scheduled use.
+        subject = f"Crypto Scalper — test email — {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
+        body = "This is a one-off test to confirm RESEND_API_KEY/REPORT_TO_EMAIL are correctly wired up for the crypto-scalper hourly digest. No real trade activity is referenced here."
+        result = notify.send_email(subject, body)
+        print(json.dumps(result))
+        sys.exit(0)
+
     digest = build_digest()
     if digest is None:
         print(f"No crypto scalper order activity in the last {LOOKBACK_MINUTES} minutes — no email sent.")

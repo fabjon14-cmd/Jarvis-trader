@@ -6,7 +6,12 @@ name: Crypto Scalper Hourly Digest
 on:
   schedule:
     - cron: "0 * * * *"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      test:
+        description: "Send a one-off test email instead of checking real activity"
+        required: false
+        default: "false"
 
 jobs:
   digest:
@@ -30,4 +35,9 @@ jobs:
           CRYPTO_APCA_BASE_URL: ${{ secrets.CRYPTO_APCA_BASE_URL }}
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           REPORT_TO_EMAIL: ${{ secrets.REPORT_TO_EMAIL }}
-        run: python3 crypto-scalper/scripts/hourly_digest.py
+        run: |
+          if [ "${{ github.event.inputs.test }}" = "true" ]; then
+            python3 crypto-scalper/scripts/hourly_digest.py --test
+          else
+            python3 crypto-scalper/scripts/hourly_digest.py
+          fi

@@ -215,8 +215,10 @@ def simulate_pair(pair, bars, hour_bars):
     return trades
 
 
-def run_backtest(lookback_days=60):
-    pairs = _load_watchlist()
+def run_backtest(lookback_days=60, exclude_pairs=None):
+    """exclude_pairs: optional list of pairs to skip — for testing "what if
+    we dropped this pair" without touching the live watchlist.json."""
+    pairs = [p for p in _load_watchlist() if p not in (exclude_pairs or [])]
     all_trades = []
     per_pair_bar_counts = {}
 
@@ -342,5 +344,6 @@ if __name__ == "__main__":
         print(json.dumps(detail_pair(pair, lookback), indent=2))
     else:
         lookback = int(sys.argv[1]) if len(sys.argv) > 1 else 60
-        result = run_backtest(lookback)
+        exclude = sys.argv[2].split(",") if len(sys.argv) > 2 and sys.argv[2] else None
+        result = run_backtest(lookback, exclude_pairs=exclude)
         print(json.dumps(result, indent=2))

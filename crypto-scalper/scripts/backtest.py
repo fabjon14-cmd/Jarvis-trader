@@ -1,11 +1,21 @@
 # crypto-scalper/scripts/backtest.py
 #
 # Backtests the exact signal logic in research.get_signal() (RSI(14) < 30 +
-# EMA20 cross-above + EMA20>EMA50 + no ATR volatility spike) and the exact
-# exit logic in research.get_exit_flags() (+1.5% TP / -0.75% SL / 4h
-# timeout), replayed bar-by-bar over historical 5-minute candles with no
-# look-ahead: at bar i, only bars[0..i] are used to decide anything about
-# bar i.
+# EMA20 cross-above on 5-minute bars + EMA20>EMA50 on 1-HOUR bars + no ATR
+# volatility spike) and the exact exit logic in research.get_exit_flags()
+# (+1.5% TP / -0.75% SL / 4h timeout), replayed bar-by-bar over historical
+# candles with no look-ahead: at 5-minute bar i, only bars[0..i] (and only
+# 1-hour bars that had actually closed by that point in time) are used to
+# decide anything about bar i.
+#
+# The original same-timeframe design (RSI + both EMAs all on 5-minute bars)
+# was backtested first and produced ZERO trades across 60 days / 136k bars
+# — a real 5-minute RSI-oversold dip usually also drags the fast 5-min
+# EMA(20) below the 5-min EMA(50) at the same time, making "oversold" and
+# "still bullish-aligned" nearly mutually exclusive on one fast timeframe.
+# Moving the alignment check to 1-hour bars (2026-08-05) fixes that: an
+# hourly EMA reacts far more slowly, so a brief 5-minute dip doesn't also
+# flip the hourly trend.
 #
 # Deliberately scoped to "does the signal itself have edge" — it does NOT
 # simulate the daily/weekly notional caps, max-positions, category caps, or
@@ -17,6 +27,7 @@
 import os
 import sys
 import json
+import bisect
 import importlib.util
 from datetime import datetime, timedelta, timezone
 
@@ -72,11 +83,49 @@ def fetch_historical_bars(pair, timeframe="5Min", lookback_days=60):
     return all_bars
 
 
-def simulate_pair(pair, bars):
+def _bar_time(bar):
+    return datetime.strptime(bar["t"][:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+
+
+def build_1h_alignment_lookup(hour_bars):
+    """Mirrors research.get_1h_trend_alignment(), replayed historically. For
+    each 1-hour bar with enough history behind it (index >= 49, needed for
+    EMA50), its EMA20/50 only become "known" at bar_start + 1 hour — the
+    bar hasn't closed before then. Returns a list of (available_from, ema20,
+    ema50) sorted by available_from, for bisecting against a 5-minute bar's
+    own timestamp — this is what prevents the backtest from using an hourly
+    candle's close before it would actually have existed live."""
+    closes = [b["c"] for b in hour_bars]
+    ema20_series = research.compute_ema_series(closes, 20)
+    ema50_series = research.compute_ema_series(closes, 50)
+    lookup = []
+    for bar_idx in range(49, len(hour_bars)):
+        ema20 = ema20_series[bar_idx - 19]
+        ema50 = ema50_series[bar_idx - 49]
+        available_from = _bar_time(hour_bars[bar_idx]) + timedelta(hours=1)
+        lookup.append((available_from, ema20, ema50))
+    return lookup
+
+
+def lookup_1h_alignment(lookup, bar_time):
+    """Latest (ema20, ema50) whose available_from <= bar_time, or None if
+    no 1-hour bar had closed yet at that point in history."""
+    if not lookup:
+        return None
+    times = [entry[0] for entry in lookup]
+    idx = bisect.bisect_right(times, bar_time) - 1
+    if idx < 0:
+        return None
+    return lookup[idx][1], lookup[idx][2]
+
+
+def simulate_pair(pair, bars, hour_bars):
     """Replay the exact live signal/exit logic bar-by-bar. Returns a list of
     completed trades (dicts with entry/exit price, pnl_pct, exit_reason,
-    bars_held)."""
+    bars_held). `hour_bars` backs the 1-hour EMA20/50 trend-alignment
+    check — see build_1h_alignment_lookup()."""
     closes = [b["c"] for b in bars]
+    alignment_lookup = build_1h_alignment_lookup(hour_bars)
     max_hold_bars = int(research.MAX_HOLD_HOURS * 60 / 5)
     trades = []
     position = None
@@ -127,15 +176,19 @@ def simulate_pair(pair, bars):
 
         rsi = research.compute_rsi(window_closes, 14)
         ema20_series = research.compute_ema_series(window_closes, 20)
-        ema50_series = research.compute_ema_series(window_closes, 50)
         atr_series = research.compute_atr_series(window_bars, 14)
-        if rsi is None or len(ema20_series) < 2 or not ema50_series or len(atr_series) < 20:
+        if rsi is None or len(ema20_series) < 2 or len(atr_series) < 20:
             continue
+
+        alignment = lookup_1h_alignment(alignment_lookup, _bar_time(bar))
+        if alignment is None:
+            continue  # no 1-hour bar had closed yet at this point in history
+        ema20_1h, ema50_1h = alignment
 
         prev_close, curr_close = closes[i - 1], closes[i]
         crossed_above = prev_close <= ema20_series[-2] and curr_close > ema20_series[-1]
         rsi_oversold = rsi < 30
-        ema_alignment_bullish = ema20_series[-1] > ema50_series[-1]
+        ema_alignment_bullish = ema20_1h > ema50_1h
         atr_avg20 = sum(atr_series[-20:]) / 20
         atr_volatility_spike = atr_avg20 > 0 and atr_series[-1] > research.ATR_SPIKE_MULTIPLE * atr_avg20
 
@@ -161,7 +214,12 @@ def run_backtest(lookback_days=60):
         per_pair_bar_counts[pair] = len(bars)
         if len(bars) < WARMUP_BARS + 20:
             continue
-        all_trades.extend(simulate_pair(pair, bars))
+        # +5 days padding so the 1-hour EMA(50) has enough history behind
+        # the very first 5-minute bar being tested, not just from lookback start.
+        hour_bars = fetch_historical_bars(pair, timeframe="1Hour", lookback_days=lookback_days + 5)
+        if len(hour_bars) < 50:
+            continue
+        all_trades.extend(simulate_pair(pair, bars, hour_bars))
 
     wins = [t for t in all_trades if t["pnl_pct"] > 0]
     win_rate = round(len(wins) / len(all_trades) * 100, 1) if all_trades else None
@@ -214,13 +272,15 @@ def run_backtest(lookback_days=60):
         "per_pair": per_pair,
         "btc_buy_and_hold_pct_same_window": btc_buy_and_hold_pct,
         "scope_note": (
-            "Signal-only backtest: replays the exact RSI/EMA/ATR buy trigger and "
-            "TP/SL/timeout exits bar-by-bar with no look-ahead. Does NOT simulate "
+            "Signal-only backtest: replays the exact RSI(14)+EMA20-cross (5-min) "
+            "+ EMA20>EMA50 (1-hour) + ATR volatility filter and TP/SL/timeout "
+            "exits bar-by-bar with no look-ahead — 1-hour EMAs are only used "
+            "from the point they had actually closed. Does NOT simulate "
             "daily/weekly notional caps, max-positions, category caps, or "
             "RSI-weighted cross-pair allocation — those affect how much capital "
             "gets deployed, not whether an individual trade wins or loses. "
-            "EMA/RSI/ATR computed from a rolling last-150-bar window per step, "
-            "not the full history since account inception (a standard, "
+            "5-min RSI/EMA/ATR computed from a rolling last-150-bar window per "
+            "step, not the full history since account inception (a standard, "
             "negligible-error approximation given EMA's exponential decay)."
         ),
     }

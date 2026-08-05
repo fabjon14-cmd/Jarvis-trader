@@ -33,26 +33,66 @@ it, don't retry with adjusted numbers.
 
 ## Strategy — precisely
 
-**Buy trigger:** on the 5-minute timeframe, ALL of the following must be
-true on the same completed bar (expanded 2026-08-05 from RSI+EMA20 alone,
-at the operator's request, to add trend context and a volatility filter):
-- RSI(14) < 30 (Wilder's smoothing, standard 14-period).
-- The close **crosses above** EMA(20) — the previous bar's close was at or
-  below its EMA, and this bar's close is above its EMA. A pair already
-  trading above its EMA with no cross event does not qualify; this is a
-  cross detector, not a level check. (Same precision principle as the
-  equities bot's stabilization-signal definition — a fuzzy "looks like it's
-  turning" is not verifiable, a cross event is.)
-- **EMA(20) > EMA(50)** ("bullish alignment") — the short-term trend is
-  above the long-term trend, so this is a dip-buy within an established
-  uptrend, not a bottom-call against the broader trend. Both EMAs computed
-  from the same 5-minute closes.
-- **No ATR volatility spike:** ATR(14) (Wilder-smoothed, from the same
-  5-minute OHLC bars) is not more than `CRYPTO_ATR_SPIKE_MULTIPLE` (default
-  2x) its own trailing 20-period average. RSI and EMA behave unreliably
-  during a volatility/news shock — a spike blocks the signal regardless of
-  what RSI/EMA say, same "don't trust a check that can't be verified right
-  now" principle as the API-failure handling below.
+**Buy trigger:** ALL of the following must be true (expanded 2026-08-05
+from RSI+EMA20 alone, at the operator's request, to add trend context and
+a volatility filter):
+- RSI(14) < 30 on **5-minute** bars (Wilder's smoothing, standard 14-period).
+- The close **crosses above** EMA(20), also on **5-minute** bars — the
+  previous bar's close was at or below its EMA, and this bar's close is
+  above its EMA. A pair already trading above its EMA with no cross event
+  does not qualify; this is a cross detector, not a level check. (Same
+  precision principle as the equities bot's stabilization-signal
+  definition — a fuzzy "looks like it's turning" is not verifiable, a
+  cross event is.)
+- **EMA(20) > EMA(50)** ("bullish alignment"), computed on **1-HOUR**
+  bars — a deliberately slower timeframe than the two conditions above.
+  See "Multi-timeframe trend filter" below for why; the short version is
+  that computing this on the same 5-minute bars made it nearly impossible
+  to satisfy alongside RSI-oversold, and a backtest confirmed it: zero
+  trades across 60 days / 136k bars.
+- **No ATR volatility spike:** ATR(14) on **5-minute** bars (Wilder-smoothed)
+  is not more than `CRYPTO_ATR_SPIKE_MULTIPLE` (default 2x) its own
+  trailing 20-period average. RSI and EMA behave unreliably during a
+  volatility/news shock — a spike blocks the signal regardless of what
+  RSI/EMA say, same "don't trust a check that can't be verified right now"
+  principle as the API-failure handling below.
+
+### Multi-timeframe trend filter (added 2026-08-05)
+
+The EMA(20)/EMA(50) alignment check originally ran on the same 5-minute
+bars as everything else. A backtest of that version (`scripts/backtest.py`,
+60 days, ~136k bars across all 8 pairs) produced **zero trades** — not a
+low win rate, literally no entries at all, matching the zero trades
+observed in live testing over several hours the same day. The cause: a
+real RSI(14)-oversold reading on 5-minute bars usually happens *during* a
+decline sharp enough to also drag the fast-reacting 5-minute EMA(20) below
+the 5-minute EMA(50) at the same time — so "oversold" and "still
+bullish-aligned" were nearly mutually exclusive when both were measured on
+the same fast timeframe.
+
+The fix: compute the EMA(20)/EMA(50) alignment on **1-hour** bars instead
+(`research.get_1h_trend_alignment()`), while RSI and the entry cross stay
+on 5-minute bars. An hourly EMA reacts far more slowly than a 5-minute
+one, so a brief 5-minute dip doesn't also flip the hourly trend — this
+keeps the original intent (don't buy dips in a genuine downtrend) while
+actually being satisfiable alongside a 5-minute oversold reading. This is
+a standard real technique (multi-timeframe confirmation: a slow timeframe
+for trend context, a fast timeframe for entry timing), not a novel
+experiment.
+
+Only **fully completed** hourly bars are used — Alpaca's most recent
+returned 1-hour bar for a live "now" fetch is very likely the
+currently-forming (incomplete) hour, and using its still-changing values
+would be the same "don't count today's still-forming data" mistake this
+project avoids elsewhere (see the equities bot's falling-knife rule). The
+backtest replicates this exactly via timestamp-based lookup — a 1-hour
+bar's EMA values only become usable in the replay from
+`bar_start + 1 hour` onward, never before, so there's no look-ahead bias
+introduced by the fix.
+
+After this change, re-run the backtest before trusting the strategy
+further — the fix addresses the *mechanism* that produced zero trades,
+but doesn't by itself prove the resulting signal has positive edge.
 
 All four conditions are computed together in `research.get_signal()` and
 returned as a single `buy_signal` boolean — see that function's docstring
@@ -286,8 +326,9 @@ watchlist pair — every pair, every run, whether the action was `HOLD`,
 contains:
 1. `portfolio` — cash and net liquidation value at decision time.
 2. `positions` — open position count and notional exposure by category.
-3. `technical_validation` — RSI(14), EMA(20)/EMA(50) + alignment, ATR(14)
-   + its 20-period average and whether it's spiking.
+3. `technical_validation` — RSI(14) and EMA(20) on 5-minute bars,
+   EMA(20)/EMA(50) + alignment on 1-hour bars, ATR(14) + its 20-period
+   average and whether it's spiking (5-minute).
 4. `invalidation_price` — the hard stop-loss price level (entry price ×
    (1 − stop-loss %)) for this pair's position, or `null` if no position is
    open. This is the price the strategy would need to trade back to for the

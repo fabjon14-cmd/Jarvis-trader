@@ -1,0 +1,52 @@
+name: Crypto Scalper Weekly Review
+
+# Fridays at 20:30 UTC, matching the equities bot's weekly review cadence.
+# Quantitative-only rollup (win rate, realized P&L, BTC benchmark) — see
+# crypto-scalper/scripts/review.py and crypto-scalper/CLAUDE.md "Weekly
+# review" for what this does and doesn't cover.
+on:
+  schedule:
+    - cron: "30 20 * * 5"
+  workflow_dispatch:
+    inputs:
+      period_days:
+        description: "Lookback window in days"
+        required: false
+        default: "7"
+
+permissions:
+  contents: write
+
+jobs:
+  run-review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests python-dotenv
+
+      - name: Run review
+        env:
+          CRYPTO_APCA_API_KEY_ID: ${{ secrets.CRYPTO_APCA_API_KEY_ID }}
+          CRYPTO_APCA_API_SECRET_KEY: ${{ secrets.CRYPTO_APCA_API_SECRET_KEY }}
+          CRYPTO_APCA_BASE_URL: ${{ secrets.CRYPTO_APCA_BASE_URL }}
+        run: python3 crypto-scalper/scripts/review.py write "${{ github.event.inputs.period_days || 7 }}"
+
+      - name: Commit review
+        run: |
+          git config user.name "crypto-scalper-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add crypto-scalper/reviews/
+          if git diff --staged --quiet; then
+            echo "No review changes to commit."
+          else
+            git commit -m "Crypto scalper weekly review $(date -u +'%Y-%m-%d')"
+            git push
+          fi

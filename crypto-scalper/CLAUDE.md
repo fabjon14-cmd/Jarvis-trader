@@ -18,7 +18,8 @@ capital.
 
 - `scripts/research.py` — `signal PAIR | bars PAIR | positions | deployed | exit-flags | circuit-breaker | max-positions PAIR | category-cap PAIR | account` (read-only). Talks to this agent's own Alpaca account via `CRYPTO_APCA_API_KEY_ID` / `CRYPTO_APCA_API_SECRET_KEY` / `CRYPTO_APCA_BASE_URL` — entirely separate credentials from the equities Trader's `APCA_*` vars.
 - `scripts/trade.py` — `order PAIR QTY SIDE [LIMIT_PRICE]`
-- `agent/scalper_agent.py` — the actual run loop: checks exits, then evaluates new-buy signals, places orders, builds a JSON decision envelope for every pair, and appends both to the day's journal. This is what gets scheduled.
+- `agent/scalper_agent.py` — the actual run loop: checks exits, then evaluates new-buy signals, places orders, builds a JSON decision envelope for every pair, and appends both to the day's journal. This is what gets scheduled every 5 minutes.
+- `scripts/review.py` — `write [PERIOD_DAYS] | show [PERIOD_DAYS]`, quantitative-only performance rollup (win rate, realized P&L, BTC benchmark). Scheduled weekly, separately, via `.github/workflows/crypto-scalper-review.yml`. See "Weekly review" below.
 - `watchlist.json` — crypto pairs in scope: `BTC/USD`, `ETH/USD`, `SOL/USD`, `AVAX/USD`, `DOT/USD`, `LINK/USD`, `UNI/USD`, `DOGE/USD` (expanded from the original 3 on 2026-08-05 so the category cap below has more than one category to actually enforce across). Don't trade pairs outside it without being told to.
 - `categories.json` — category per pair (`Layer1`, `DeFi`, `Meme`), backing the category cap below. Mirrors the equities bot's `sectors.json` pattern.
 - `../scripts/notify.py` (shared with the equities bot) — email the day's journal. Call this **at most once a day** (e.g. after the last scheduled firing), not every run — this agent fires far more often than the equities bot's hourly cadence, and per-run emails would be spam.
@@ -81,11 +82,27 @@ fires while it's held.
 `place_order` requests margin, and this should stay that way unless a human
 deliberately decides otherwise (see Leverage note below).
 
-**Order pricing:** every order is a limit order priced within 0.1% of the
-latest close (`CRYPTO_LIMIT_SLIPPAGE_BUFFER` in `scalper_agent.py`, above
-the reference price for buys, below it for sells) — never a market order.
-This was already the design before the operator's 2026-08-05 request
-explicitly called for it, so no change was needed here, just confirming it.
+**Order pricing:** entries, take-profit exits, and timeout exits are all
+limit orders priced within 0.1% of the latest close
+(`CRYPTO_LIMIT_SLIPPAGE_BUFFER` in `scalper_agent.py`, above the reference
+price for buys, below it for sells).
+
+**Stop-loss execution is the one exception — market order, not limit**
+(changed 2026-08-05). A limit sell can simply not fill during a sharp,
+fast drop, letting the loss run past -0.75% with no backstop — the entire
+point of a stop-loss is a guaranteed exit, which a resting limit order
+doesn't provide. `trade.place_order(..., market=True)` is used only for
+`close_stop_loss` exits; every other order type stays limit-only. The
+reference price is still passed through and used for the notional-cap
+check and duplicate-order dedup — it just isn't sent as the order's actual
+price. While fixing this, a related gap was found and fixed in the same
+change: the per-order notional cap (`CRYPTO_MAX_ORDER_NOTIONAL`) and the
+per-run order-count cap (`CRYPTO_MAX_ORDERS_PER_RUN`) previously applied
+to every order unconditionally, meaning a mandatory stop-loss exit reached
+later in a run could get rejected by the same cap that limits new
+buying — contradicting "a mandatory exit is never blocked by a buy-side
+gate" a few paragraphs up. Both caps now only apply to buys, matching
+every other buy-only gate below.
 
 ## Risk controls (enforced in code, not just prose)
 
@@ -235,6 +252,30 @@ for a human skimming the file — both describe the same decision.
 
 If this runs as a scheduled cloud routine, commit and push the journal file
 at the end of each run — each routine starts from a fresh clone.
+
+## Weekly review (added 2026-08-05)
+
+`.github/workflows/crypto-scalper-review.yml` runs `scripts/review.py write`
+every Friday at 20:30 UTC (matching the equities bot's review cadence),
+writing `reviews/YYYY-MM-DD.md`. It computes, from Alpaca's own order and
+portfolio history — not from re-reading the journal's prose:
+- Orders placed/filled/rejected over the period.
+- Closed round-trips (buy+sell pairs, single-entry-per-pair makes this a
+  simple match rather than a FIFO queue), win rate, and realized P&L.
+- Account equity change over the period vs. a BTC/USD buy-and-hold
+  benchmark over the same window — same "out/underperformed by N points"
+  framing as the equities bot's SPY comparison.
+- Trend vs. the most recent prior review on file, if any.
+
+**What this deliberately does NOT do:** the equities bot's weekly review
+also has a "Rule adherence" section — an LLM re-reading the journal's prose
+against CLAUDE.md's rules to flag violations. That review runs as a full
+Claude cloud agent (a Routine); this one runs as a plain Python script on a
+GitHub Actions cron, with no LLM in the loop, so it can't do that
+qualitative read. The output says so explicitly rather than silently
+omitting it. If a qualitative review is wanted later, that's a different
+execution model (an actual agent run, like the equities Routines) — not
+something to fake with more Python.
 
 ## Setup notes
 

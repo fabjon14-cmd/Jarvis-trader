@@ -151,10 +151,22 @@ def run():
             else:
                 try:
                     ref_price = research.get_crypto_bars(pair, limit=2)[-1]["c"]
-                    limit_price = round(ref_price * (1 - LIMIT_SLIPPAGE_BUFFER), 8)
-                    result = trade.place_order(pair, flag["qty"], "sell", limit_price)
+                    if flag["action"] == "close_stop_loss":
+                        # Market order, not limit — a resting limit sell can
+                        # simply not fill during a sharp drop, letting the
+                        # loss run past -0.75% with no backstop. This is the
+                        # one exit where guaranteed execution matters more
+                        # than price control. See CLAUDE.md "Stop-loss
+                        # execution". ref_price is still passed as the
+                        # reference for the notional-cap check and dedup.
+                        result = trade.place_order(pair, flag["qty"], "sell", ref_price, market=True)
+                        price_desc = f"MARKET (ref ${ref_price})"
+                    else:
+                        limit_price = round(ref_price * (1 - LIMIT_SLIPPAGE_BUFFER), 8)
+                        result = trade.place_order(pair, flag["qty"], "sell", limit_price)
+                        price_desc = f"limit ${limit_price}"
                     action = "CLOSE"
-                    reason = f"{flag['action']} ({flag['reason']}) -> sell {flag['qty']} @ limit ${limit_price}: {json.dumps(result)}"
+                    reason = f"{flag['action']} ({flag['reason']}) -> sell {flag['qty']} @ {price_desc}: {json.dumps(result)}"
                     log.append(f"- {pair}: EXIT {reason}")
                 except Exception as exc:
                     action = "HOLD"

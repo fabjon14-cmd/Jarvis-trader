@@ -62,9 +62,14 @@ def _headers(json_content=False):
     return headers
 
 
-def _find_duplicate_order(symbol, qty, side, limit_price):
+def _find_duplicate_order(symbol, qty, side, limit_price, market=False):
     """Same exact-match-today dedup as the equities bot, checked against
-    Alpaca's own order history rather than in-memory state."""
+    Alpaca's own order history rather than in-memory state. For a market
+    order (market=True) there's no limit_price to match on, so dedup
+    instead requires the existing order to ALSO have been a market order
+    (Alpaca's own record shows limit_price=null for those) — otherwise a
+    legitimate limit entry and a market stop-loss exit on the same
+    symbol/side/qty could falsely dedup against each other."""
     today = datetime.now(timezone.utc).date()
     for o in get_orders(status="all", limit=200):
         if o.get("symbol") != symbol or o.get("side") != side:
@@ -72,10 +77,20 @@ def _find_duplicate_order(symbol, qty, side, limit_price):
         if o.get("status") in ("canceled", "cancelled", "rejected", "expired"):
             continue
         try:
-            if float(o.get("qty") or 0) != float(qty) or float(o.get("limit_price") or 0) != float(limit_price):
+            if float(o.get("qty") or 0) != float(qty):
                 continue
         except (TypeError, ValueError):
             continue
+        existing_limit = o.get("limit_price")
+        if market:
+            if existing_limit is not None:
+                continue
+        else:
+            try:
+                if existing_limit is None or float(existing_limit) != float(limit_price):
+                    continue
+            except (TypeError, ValueError):
+                continue
         submitted = o.get("submitted_at") or o.get("created_at")
         if not submitted:
             continue
@@ -96,18 +111,28 @@ def confirm(prompt):
     return reply in ("y", "yes")
 
 
-def place_order(symbol, qty, side, limit_price=None):
+def place_order(symbol, qty, side, limit_price=None, market=False):
     """Place a buy or sell order for a crypto pair (e.g. "BTC/USD"). No
     leverage/margin — this trades cash buying power only, same as any other
-    order on this account; nothing here requests margin."""
+    order on this account; nothing here requests margin.
+
+    `market=True` submits a true market order instead of a limit order —
+    this is deliberately narrow and should ONLY ever be used for the
+    mandatory stop-loss exit (see crypto-scalper/CLAUDE.md "Stop-loss
+    execution"). A limit sell can simply not fill during a sharp drop,
+    letting the loss run past -0.75% with no backstop; a market order
+    guarantees the exit executes. `limit_price` is still required even when
+    market=True — it's used as the reference price for the notional-cap
+    check and duplicate-order dedup, just not sent as the actual order's
+    price (Alpaca fills a market order at whatever the market price is)."""
     global _orders_this_run
 
     if UNATTENDED:
         if not limit_price:
-            return {"placed": False, "reason": "Unattended runs require limit_price (no market orders)."}
+            return {"placed": False, "reason": "Unattended runs require a reference limit_price (used for cap checks/dedup) even for market=True orders."}
 
         try:
-            dup = _find_duplicate_order(symbol, qty, side, limit_price)
+            dup = _find_duplicate_order(symbol, qty, side, limit_price, market)
         except Exception as exc:
             return {"placed": False, "reason": f"Could not verify duplicate-order protection ({exc}) — holding rather than risking a double-submit."}
         if dup:
@@ -119,23 +144,29 @@ def place_order(symbol, qty, side, limit_price=None):
             }
 
         notional = float(qty) * float(limit_price)
-        if notional > MAX_ORDER_NOTIONAL:
-            return {
-                "placed": False,
-                "reason": f"Order notional ${notional:,.2f} exceeds cap of ${MAX_ORDER_NOTIONAL:,.2f} "
-                          f"(set CRYPTO_MAX_ORDER_NOTIONAL to change).",
-            }
-        if _orders_this_run >= MAX_ORDERS_PER_RUN:
-            return {
-                "placed": False,
-                "reason": f"Reached the {MAX_ORDERS_PER_RUN}-order cap for this run "
-                          f"(set CRYPTO_MAX_ORDERS_PER_RUN to change).",
-            }
 
         # Buy-only gates, same "fail closed on an unverifiable check" pattern
-        # as the equities bot. Sells (exits) skip all of these — they reduce
-        # risk, not add it.
+        # as the equities bot. Sells (exits) skip ALL of these — they reduce
+        # risk, not add it. This includes the notional and per-run order-count
+        # caps below: those used to apply unconditionally, which meant a
+        # mandatory stop-loss exit reached later in a run could get rejected
+        # by the SAME cap that limits new buying — directly contradicting
+        # "a mandatory exit is never blocked by a buy-side gate" (fixed
+        # 2026-08-05, found while adding the market-order stop-loss exit).
         if side == "buy":
+            if notional > MAX_ORDER_NOTIONAL:
+                return {
+                    "placed": False,
+                    "reason": f"Order notional ${notional:,.2f} exceeds cap of ${MAX_ORDER_NOTIONAL:,.2f} "
+                              f"(set CRYPTO_MAX_ORDER_NOTIONAL to change).",
+                }
+            if _orders_this_run >= MAX_ORDERS_PER_RUN:
+                return {
+                    "placed": False,
+                    "reason": f"Reached the {MAX_ORDERS_PER_RUN}-order cap for this run "
+                              f"(set CRYPTO_MAX_ORDERS_PER_RUN to change).",
+                }
+
             try:
                 cb = get_circuit_breaker_status()
             except Exception as exc:
@@ -194,7 +225,12 @@ def place_order(symbol, qty, side, limit_price=None):
                               f"(${per_trade_cap:,.2f} of ${buying_power:,.2f}).",
                 }
 
-    price_desc = f"limit ${limit_price}" if limit_price else "at market"
+    if market:
+        price_desc = f"MARKET (ref ${limit_price}, guaranteed-fill exit)"
+    elif limit_price:
+        price_desc = f"limit ${limit_price}"
+    else:
+        price_desc = "at market"
     if not confirm(f"{side.upper()} {qty} {symbol} ({price_desc}) on {BASE_URL}. Approve?"):
         return {"placed": False, "reason": "Declined."}
 
@@ -203,10 +239,10 @@ def place_order(symbol, qty, side, limit_price=None):
         "symbol": symbol,
         "qty": qty,
         "side": side,
-        "type": "limit" if limit_price else "market",
+        "type": "market" if market else ("limit" if limit_price else "market"),
         "time_in_force": "gtc",  # crypto has no "day" session to expire against
     }
-    if limit_price:
+    if limit_price and not market:
         order_data["limit_price"] = str(limit_price)
 
     url = f"{BASE_URL}/v2/orders"

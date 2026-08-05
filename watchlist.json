@@ -1,11 +1,15 @@
 {
   "symbols": [
-    "NVDA", "AAPL", "MSFT", "AMD", "TSLA", "GOOGL", "AMZN", "META", "CRM", "ORCL", "ADBE", "PLTR",
-    "JPM", "BAC", "GS", "V", "MA",
-    "UNH", "JNJ", "LLY", "PFE",
-    "WMT", "PG", "KO", "MCD", "NKE", "HD",
-    "XOM", "CVX",
-    "BA", "CAT",
-    "DIS", "NFLX"
+    "NVDA", "AAPL", "MSFT", "AMD", "CRM", "ORCL", "ADBE", "PLTR", "AVGO",
+    "GOOGL", "META", "DIS", "NFLX", "CMCSA",
+    "AMZN", "TSLA", "MCD", "NKE", "HD", "SBUX", "LOW",
+    "JPM", "BAC", "GS", "V", "MA", "MS", "AXP",
+    "UNH", "JNJ", "LLY", "PFE", "ABBV", "MRK",
+    "WMT", "PG", "KO", "COST", "PEP",
+    "XOM", "CVX", "COP",
+    "BA", "CAT", "HON", "GE",
+    "LIN", "SHW",
+    "NEE",
+    "PLD"
   ]
 }

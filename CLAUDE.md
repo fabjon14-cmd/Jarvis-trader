@@ -77,7 +77,7 @@ bot's configured risk parameters.
 
 ### Balanced allocation across opportunities
 
-Evaluate all 32 symbols before placing anything, not just up to whichever
+Evaluate all 50 symbols before placing anything, not just up to whichever
 symbol first clears the bar — don't exhaust the daily/weekly budget on the
 first acceptable candidate you reach in watchlist order. If more than one
 symbol genuinely clears the buy bar this run, rank them by conviction (the
@@ -91,14 +91,14 @@ answerable, not just "why this one."
 
 ### Budget-aware evaluation (efficiency)
 
-Before pulling fresh bars/news for all 32 symbols to evaluate new buys, check
+Before pulling fresh bars/news for all 50 symbols to evaluate new buys, check
 `scripts/research.py deployed` first and compute today's remaining daily
 headroom (`$500 - daily_deployed`, or less if weekly headroom is tighter).
 If that headroom is below the price of the cheapest realistically-affordable
 watchlist symbol, skip the full per-symbol new-buy sweep entirely and log one
 line — e.g. "Daily headroom $12.40 remaining — below any realistic
 single-share buy, skipping new-buy evaluation this firing" — instead of
-re-deriving stabilization/earnings/sector detail for 32 symbols that are
+re-deriving stabilization/earnings/sector detail for 50 symbols that are
 budget-moot regardless of their signal. This does not apply to the
 stop-loss or circuit-breaker checks, which always run in full every firing
 regardless of budget — this is purely about not wasting a full research

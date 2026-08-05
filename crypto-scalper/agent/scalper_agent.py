@@ -189,7 +189,8 @@ def run():
             row["action"], row["reason"] = "HOLD", buy_block_reason
         elif not signal["buy_signal"]:
             row["action"], row["reason"] = "HOLD", (
-                f"rsi={signal['rsi']} (oversold={signal['rsi_oversold']}), "
+                f"rsi={signal['rsi']} (recently_oversold={signal['rsi_recently_oversold']}, "
+                f"min_in_lookback={signal['rsi_min_in_lookback']}), "
                 f"crossed_above_ema20={signal['crossed_above_ema']}, "
                 f"ema_alignment_bullish={signal['ema_alignment_bullish']}, "
                 f"atr_volatility_spike={signal['atr_volatility_spike']}"
@@ -205,13 +206,26 @@ def run():
     # Pass 2: RSI-depth-weighted allocation across every pair that qualified
     # THIS run (added 2026-08-05, at the operator's request that stronger-
     # looking setups get more capital than weaker ones, not an even split).
-    # Weight = (30 - rsi), i.e. how far below the oversold threshold the
-    # reading is — a deeper oversold RSI is the conventional read on a
-    # "stronger" mean-reversion setup. This is a signal-STRENGTH proxy, not
-    # a profit prediction — nothing here or anywhere can actually know which
-    # trade will make more money; this only changes which qualifying setup
-    # looks more textbook by the numbers already computed. Always positive
-    # for a qualifying candidate, since buy_signal requires rsi < 30.
+    # Weight = (30 - rsi_min_in_lookback), i.e. how far below the oversold
+    # threshold RSI got during the dip that qualified this pair — a deeper
+    # oversold reading is the conventional read on a "stronger" mean-
+    # reversion setup. This is a signal-STRENGTH proxy, not a profit
+    # prediction — nothing here or anywhere can actually know which trade
+    # will make more money; this only changes which qualifying setup looks
+    # more textbook by the numbers already computed.
+    #
+    # Uses rsi_min_in_lookback, NOT the current-bar rsi (changed 2026-08-05
+    # alongside the RSI lookback-window fix): buy_signal now only requires
+    # RSI to have touched <30 within the lookback window, not on the
+    # current bar — and a diagnostic found RSI is reliably back in the
+    # 50-65 range by the time the EMA20 cross actually fires. Weighting by
+    # current rsi would make (30 - rsi) negative or near-zero for nearly
+    # every real qualifying candidate, collapsing the weighting into a flat
+    # floor value regardless of actual dip depth — silently degenerating
+    # into an even split without erroring. rsi_min_in_lookback is always
+    # < 30 for a qualifying candidate (it's the gating condition), so this
+    # stays a meaningful, always-positive signal-strength measure.
+    #
     # Each candidate still respects its own normal per-trade cap
     # (MAX_ORDER_NOTIONAL / PER_TRADE_PCT_CAP) — weighting only changes how
     # the shared daily/weekly headroom divides when more than one pair
@@ -222,15 +236,15 @@ def run():
     # even-split version had for the realistic-notional floor.
     weights = {}
     if candidates:
-        weights = {i: max(30 - results[i]["signal"]["rsi"], 0.01) for i in candidates}
+        weights = {i: max(30 - results[i]["signal"]["rsi_min_in_lookback"], 0.01) for i in candidates}
         total_weight = sum(weights.values())
         qualifying_desc = ", ".join(
-            f"{results[i]['pair']} (rsi={results[i]['signal']['rsi']}, weight {weights[i] / total_weight * 100:.0f}%)"
+            f"{results[i]['pair']} (rsi_min={results[i]['signal']['rsi_min_in_lookback']}, weight {weights[i] / total_weight * 100:.0f}%)"
             for i in candidates
         )
         log.append(
             f"- {len(candidates)} pair(s) qualified for a buy this run — weighting ${headroom:,.2f} "
-            f"headroom by RSI depth (deeper oversold = more capital), not evenly: {qualifying_desc}."
+            f"headroom by RSI dip depth (deeper oversold = more capital), not evenly: {qualifying_desc}."
         )
 
     for idx in candidates:
@@ -276,7 +290,8 @@ def run():
         row["invalidation_price"] = _invalidation_price(limit_price)
         row["risk_sizing"] = risk_sizing
         row["reason"] = (
-            f"rsi={signal['rsi']}<30, crossed above EMA20, EMA20>EMA50, no ATR spike — "
+            f"rsi={signal['rsi']} (touched {signal['rsi_min_in_lookback']} within last {research.RSI_LOOKBACK_BARS} bars), "
+            f"crossed above EMA20, EMA20>EMA50 (1h), no ATR spike — "
             f"order {qty} @ limit ${limit_price} (${notional:,.2f}, RSI-weighted share {weights[idx] / total_weight * 100:.0f}% "
             f"across {len(candidates)} qualifying pair(s), actual risk {risk_sizing['actual_risk_pct']}% vs {research.TARGET_RISK_PCT}% target): {json.dumps(result)}"
         )

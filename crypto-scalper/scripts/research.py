@@ -129,11 +129,14 @@ def get_crypto_bars(pair, timeframe="5Min", limit=60):
     return bars[-limit:]
 
 
-def compute_rsi(closes, period=14):
-    """Wilder's RSI, standard 14-period smoothing. Returns the RSI as of the
-    most recent close, or None if there isn't enough history."""
+def compute_rsi_series(closes, period=14):
+    """Wilder's RSI, full series (not just the latest value) — aligned to
+    closes[period:], i.e. rsi_series[k] corresponds to closes[period + k].
+    Needed to check whether RSI touched oversold at ANY point in a lookback
+    window, not just the current bar — see get_signal()'s "RSI lookback"
+    note for why same-bar-only checking doesn't work in practice."""
     if len(closes) < period + 1:
-        return None
+        return []
     gains, losses = [], []
     for i in range(1, len(closes)):
         change = closes[i] - closes[i - 1]
@@ -141,13 +144,25 @@ def compute_rsi(closes, period=14):
         losses.append(max(-change, 0.0))
     avg_gain = sum(gains[:period]) / period
     avg_loss = sum(losses[:period]) / period
+
+    def _rsi(ag, al):
+        if al == 0:
+            return 100.0
+        return 100 - (100 / (1 + ag / al))
+
+    series = [_rsi(avg_gain, avg_loss)]
     for i in range(period, len(gains)):
         avg_gain = (avg_gain * (period - 1) + gains[i]) / period
         avg_loss = (avg_loss * (period - 1) + losses[i]) / period
-    if avg_loss == 0:
-        return 100.0
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
+        series.append(_rsi(avg_gain, avg_loss))
+    return series
+
+
+def compute_rsi(closes, period=14):
+    """Wilder's RSI as of the most recent close, or None if there isn't
+    enough history. Thin wrapper over compute_rsi_series()."""
+    series = compute_rsi_series(closes, period)
+    return series[-1] if series else None
 
 
 def compute_ema_series(closes, period=20):
@@ -185,20 +200,77 @@ def compute_atr_series(bars, period=14):
 ATR_SPIKE_MULTIPLE = float(os.getenv("CRYPTO_ATR_SPIKE_MULTIPLE", "2.0"))
 
 
+def get_1h_trend_alignment(pair, limit=80):
+    """EMA(20) > EMA(50) computed on 1-HOUR bars — deliberately a different,
+    slower timeframe from the 5-minute entry signal (changed 2026-08-05,
+    see CLAUDE.md "Multi-timeframe trend filter"). A backtest found the
+    original same-timeframe design (both on 5-min bars) fired on ZERO
+    trades across 60 days / 136k bars: a real RSI(14)-oversold dip on
+    5-minute bars usually also drags the fast-reacting 5-min EMA(20) below
+    the 5-min EMA(50) at the same time, making "oversold" and "still
+    bullish-aligned" nearly mutually exclusive on one fast timeframe. A
+    1-hour EMA reacts far more slowly, so a brief 5-minute dip doesn't also
+    flip the hourly trend — this keeps the original intent (don't buy dips
+    in a genuine downtrend) while actually being satisfiable alongside a
+    5-minute oversold reading.
+
+    Only uses FULLY COMPLETED hourly bars — Alpaca's most recent returned
+    bar for a live "now" fetch is very likely the currently-forming
+    (incomplete) hour, and using its still-changing values would be the
+    same "don't count today's still-forming data" mistake this project
+    avoids elsewhere (see the equities bot's falling-knife rule)."""
+    bars = get_crypto_bars(pair, timeframe="1Hour", limit=limit + 2)
+    now = datetime.now(timezone.utc)
+    completed = []
+    for b in bars:
+        try:
+            bar_start = datetime.strptime(b["t"][:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+        except (ValueError, KeyError):
+            continue
+        if bar_start + timedelta(hours=1) <= now:
+            completed.append(b)
+
+    if len(completed) < 50:
+        return {"error": f"only {len(completed)} completed 1-hour bars available, need at least 50", "ema20_1h": None, "ema50_1h": None, "bullish": False}
+
+    closes = [b["c"] for b in completed]
+    ema20_series = compute_ema_series(closes, 20)
+    ema50_series = compute_ema_series(closes, 50)
+    if len(ema20_series) < 1 or not ema50_series:
+        return {"error": "insufficient 1-hour data for EMA20/50", "ema20_1h": None, "ema50_1h": None, "bullish": False}
+
+    ema20_1h, ema50_1h = ema20_series[-1], ema50_series[-1]
+    return {"error": None, "ema20_1h": round(ema20_1h, 4), "ema50_1h": round(ema50_1h, 4), "bullish": ema20_1h > ema50_1h}
+
+
+RSI_LOOKBACK_BARS = int(os.getenv("CRYPTO_RSI_LOOKBACK_BARS", "12"))  # 12 x 5-min = 1 hour
+
+
 def get_signal(pair, timeframe="5Min", limit=80):
-    """Buy trigger, precisely — ALL of the following on the same completed
-    bar:
-    - RSI(14) < 30 (oversold).
-    - Close crosses above EMA(20) — previous bar's close was at or below
-      its EMA, this bar's close is above it. A cross event, not merely
-      "currently above".
-    - EMA(20) > EMA(50) — short-term trend is above the long-term trend
-      ("bullish alignment"), so this is a dip-buy within an uptrend
-      regime, not a bottom-call against the broader trend.
-    - NOT an ATR volatility spike: ATR(14) is not more than
-      `CRYPTO_ATR_SPIKE_MULTIPLE` (default 2x) its own trailing 20-period
-      average — skips entries during a volatility/news shock, where RSI
-      and EMA behave unreliably.
+    """Buy trigger, precisely — ALL of the following:
+    - RSI(14) touched below 30 (oversold) at some point in the last
+      `CRYPTO_RSI_LOOKBACK_BARS` bars (default 12 = 1 hour), on 5-minute
+      bars — NOT required on the same bar as the cross below. A diagnostic
+      over 60 days of real BTC/USD data found RSI is reliably back in the
+      50-65 range by the time price actually crosses back above EMA(20)
+      (1,193 cross events, RSI at every single one already >50) — RSI is a
+      fast oscillator that recovers well before a lagging 20-period EMA
+      does, so requiring both on the identical bar produced ZERO trades
+      across 136k bars total. This lookback window fixes that while
+      keeping the original intent: a real oversold dip, confirmed by a
+      recovery signal, not necessarily on the exact same candle.
+    - Close crosses above EMA(20), on 5-minute bars, on the CURRENT bar —
+      previous bar's close was at or below its EMA, this bar's close is
+      above it. A cross event, not merely "currently above".
+    - EMA(20) > EMA(50) on the 1-HOUR timeframe ("bullish alignment") — a
+      deliberately slower timeframe than the entry signal above, so a
+      5-minute dip doesn't also disqualify itself. See
+      get_1h_trend_alignment()'s docstring for why this isn't computed on
+      the same 5-minute bars as everything else.
+    - NOT an ATR volatility spike: ATR(14) on 5-minute bars is not more
+      than `CRYPTO_ATR_SPIKE_MULTIPLE` (default 2x) its own trailing
+      20-period average — skips entries during a volatility/news shock,
+      where RSI and EMA behave unreliably.
 
     Needs more history than RSI/EMA20 alone (EMA50 seed + a 20-period ATR
     average), hence the higher default `limit` than earlier versions of
@@ -209,32 +281,42 @@ def get_signal(pair, timeframe="5Min", limit=80):
     if len(closes) < 55:
         return {"pair": pair, "error": f"only {len(closes)} bars available, need at least 55"}
 
-    rsi = compute_rsi(closes, 14)
+    rsi_series = compute_rsi_series(closes, 14)
     ema20_series = compute_ema_series(closes, 20)
-    ema50_series = compute_ema_series(closes, 50)
     atr_series = compute_atr_series(bars, 14)
-    if rsi is None or len(ema20_series) < 2 or not ema50_series or len(atr_series) < 20:
+    if not rsi_series or len(ema20_series) < 2 or len(atr_series) < 20:
         return {"pair": pair, "error": "insufficient data for RSI/EMA/ATR"}
+
+    trend = get_1h_trend_alignment(pair)
+    if trend["error"]:
+        return {"pair": pair, "error": f"1-hour trend check failed: {trend['error']}"}
+
+    rsi = rsi_series[-1]
+    rsi_lookback_window = rsi_series[-RSI_LOOKBACK_BARS:]
+    rsi_min_in_lookback = min(rsi_lookback_window)
+    rsi_oversold = rsi < 30
+    rsi_recently_oversold = rsi_min_in_lookback < 30
 
     prev_close, curr_close = closes[-2], closes[-1]
     prev_ema20, curr_ema20 = ema20_series[-2], ema20_series[-1]
-    curr_ema50 = ema50_series[-1]
     crossed_above = prev_close <= prev_ema20 and curr_close > curr_ema20
-    rsi_oversold = rsi < 30
-    ema_alignment_bullish = curr_ema20 > curr_ema50
+    ema_alignment_bullish = trend["bullish"]
 
     curr_atr = atr_series[-1]
     atr_avg20 = sum(atr_series[-20:]) / 20
     atr_volatility_spike = atr_avg20 > 0 and curr_atr > ATR_SPIKE_MULTIPLE * atr_avg20
 
-    buy_signal = rsi_oversold and crossed_above and ema_alignment_bullish and not atr_volatility_spike
+    buy_signal = rsi_recently_oversold and crossed_above and ema_alignment_bullish and not atr_volatility_spike
 
     return {
         "pair": pair,
         "rsi": round(rsi, 2),
         "rsi_oversold": rsi_oversold,
+        "rsi_min_in_lookback": round(rsi_min_in_lookback, 2),
+        "rsi_recently_oversold": rsi_recently_oversold,
         "ema20": round(curr_ema20, 4),
-        "ema50": round(curr_ema50, 4),
+        "ema20_1h": trend["ema20_1h"],
+        "ema50_1h": trend["ema50_1h"],
         "ema_alignment_bullish": ema_alignment_bullish,
         "prev_close": prev_close,
         "curr_close": curr_close,
@@ -423,7 +505,8 @@ def build_decision_envelope(pair, action, signal, account, positions, invalidati
             "rsi14": signal.get("rsi"),
             "rsi_oversold": signal.get("rsi_oversold"),
             "ema20": signal.get("ema20"),
-            "ema50": signal.get("ema50"),
+            "ema20_1h": signal.get("ema20_1h"),
+            "ema50_1h": signal.get("ema50_1h"),
             "ema_alignment_bullish": signal.get("ema_alignment_bullish"),
             "crossed_above_ema20": signal.get("crossed_above_ema"),
             "atr14": signal.get("atr14"),

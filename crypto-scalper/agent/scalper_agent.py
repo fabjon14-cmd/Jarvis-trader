@@ -202,30 +202,49 @@ def run():
         row["log_line"] = f"- {pair}: hold — {row['reason']}"
         results.append(row)
 
-    # Pass 2: even-split allocation across every pair that qualified THIS
-    # run. Each candidate still respects its own normal per-trade cap
-    # (MAX_ORDER_NOTIONAL / PER_TRADE_PCT_CAP) — this only changes how the
-    # shared daily/weekly headroom divides when more than one pair qualifies
-    # at once, instead of first-come-first-served down the watchlist.
+    # Pass 2: RSI-depth-weighted allocation across every pair that qualified
+    # THIS run (added 2026-08-05, at the operator's request that stronger-
+    # looking setups get more capital than weaker ones, not an even split).
+    # Weight = (30 - rsi), i.e. how far below the oversold threshold the
+    # reading is — a deeper oversold RSI is the conventional read on a
+    # "stronger" mean-reversion setup. This is a signal-STRENGTH proxy, not
+    # a profit prediction — nothing here or anywhere can actually know which
+    # trade will make more money; this only changes which qualifying setup
+    # looks more textbook by the numbers already computed. Always positive
+    # for a qualifying candidate, since buy_signal requires rsi < 30.
+    # Each candidate still respects its own normal per-trade cap
+    # (MAX_ORDER_NOTIONAL / PER_TRADE_PCT_CAP) — weighting only changes how
+    # the shared daily/weekly headroom divides when more than one pair
+    # qualifies at once. A single qualifying pair still gets the full normal
+    # per-trade cap, same as before. Unused headroom from a pair whose
+    # weighted share exceeds its own per-trade cap is NOT redistributed to
+    # the other candidates — a known simplification, same as the earlier
+    # even-split version had for the realistic-notional floor.
+    weights = {}
     if candidates:
-        split_headroom = headroom / len(candidates)
-        qualifying_pairs = ", ".join(results[i]["pair"] for i in candidates)
+        weights = {i: max(30 - results[i]["signal"]["rsi"], 0.01) for i in candidates}
+        total_weight = sum(weights.values())
+        qualifying_desc = ", ".join(
+            f"{results[i]['pair']} (rsi={results[i]['signal']['rsi']}, weight {weights[i] / total_weight * 100:.0f}%)"
+            for i in candidates
+        )
         log.append(
-            f"- {len(candidates)} pair(s) qualified for a buy this run ({qualifying_pairs}) — "
-            f"splitting ${headroom:,.2f} headroom evenly (${split_headroom:,.2f} each) rather than first-come-first-served."
+            f"- {len(candidates)} pair(s) qualified for a buy this run — weighting ${headroom:,.2f} "
+            f"headroom by RSI depth (deeper oversold = more capital), not evenly: {qualifying_desc}."
         )
 
     for idx in candidates:
         row = results[idx]
         pair, signal = row["pair"], row["signal"]
-        notional_cap = min(MAX_ORDER_NOTIONAL, per_trade_cap, split_headroom)
+        weighted_headroom = headroom * (weights[idx] / total_weight)
+        notional_cap = min(MAX_ORDER_NOTIONAL, per_trade_cap, weighted_headroom)
 
         if notional_cap < MIN_REALISTIC_NOTIONAL:
             row["action"] = "HOLD"
             row["reason"] = (
-                f"buy signal true but this pair's even split (${notional_cap:,.2f} of "
-                f"${headroom:,.2f} across {len(candidates)} qualifying pairs) is below the "
-                f"${MIN_REALISTIC_NOTIONAL:.0f} realistic-trade floor"
+                f"buy signal true but this pair's RSI-weighted share (${notional_cap:,.2f} of "
+                f"${headroom:,.2f}, weight {weights[idx] / total_weight * 100:.0f}% across "
+                f"{len(candidates)} qualifying pairs) is below the ${MIN_REALISTIC_NOTIONAL:.0f} realistic-trade floor"
             )
             row["log_line"] = f"- {pair}: hold — {row['reason']}"
             continue
@@ -258,8 +277,8 @@ def run():
         row["risk_sizing"] = risk_sizing
         row["reason"] = (
             f"rsi={signal['rsi']}<30, crossed above EMA20, EMA20>EMA50, no ATR spike — "
-            f"order {qty} @ limit ${limit_price} (${notional:,.2f}, even split across {len(candidates)} "
-            f"qualifying pair(s), actual risk {risk_sizing['actual_risk_pct']}% vs {research.TARGET_RISK_PCT}% target): {json.dumps(result)}"
+            f"order {qty} @ limit ${limit_price} (${notional:,.2f}, RSI-weighted share {weights[idx] / total_weight * 100:.0f}% "
+            f"across {len(candidates)} qualifying pair(s), actual risk {risk_sizing['actual_risk_pct']}% vs {research.TARGET_RISK_PCT}% target): {json.dumps(result)}"
         )
         row["log_line"] = f"- {pair}: BUY — {row['reason']}"
 

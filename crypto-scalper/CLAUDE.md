@@ -165,30 +165,47 @@ on a different, marginable venue, that's a deliberate, explicit rebuild —
 not a parameter to quietly raise — and should be treated with the same
 weight as pointing this at a live account.
 
-### Even-split allocation across simultaneous signals (added 2026-08-05)
+### RSI-depth-weighted allocation across simultaneous signals (added 2026-08-05)
 
 Per the operator's request that the strategy not "focus on investing in
-one" pair: if more than one watchlist pair qualifies for a buy in the
-SAME run, the remaining daily/weekly headroom is split evenly across all
-of them, not given first-come-first-served to whichever pair happens to
-be earlier in `watchlist.json` (BTC/USD is always first in that file, so
-without this it would have had a structural, order-of-iteration advantage
-with no basis in signal strength). `scalper_agent.py`'s `run()` does this
-in two passes: pass 1 evaluates every pair's signal and collects which
-ones qualify without sizing or placing anything yet; pass 2 divides
-`headroom / len(candidates)` and sizes each qualifying pair against
-`min(MAX_ORDER_NOTIONAL, per_trade_cap, split_headroom)` — so a single
-qualifying pair still gets the full normal per-trade cap (split among 1
-is just itself), and only sharing with others actually divides the
-budget.
+one" pair, this started as an even split, then was changed the same day
+to a weighted split when the operator asked for stronger setups to get
+more capital than weaker ones. **Important framing, stated explicitly so
+it isn't misread later:** nothing here predicts which trade will make
+more money — that's not knowable from RSI, EMA, ATR, or any other
+technical reading. The weighting below is a signal-STRENGTH proxy (how
+textbook the setup looks by the numbers already computed), not a
+profitability forecast.
 
-This addresses within-run concentration. It does NOT, on its own, prevent
-one pair from qualifying more often than others across many runs over
-time (e.g. if DOGE/USD's price action happens to trip the RSI/EMA/ATR
-conditions more frequently than BTC/USD does) — that's the mechanical
-signal doing its job, not a bug, and the existing category cap (max 2 per
-category) and 5-position cap already bound how much of the account any
-one pair or category can occupy at once regardless of how it got there.
+If more than one watchlist pair qualifies for a buy in the SAME run, the
+remaining daily/weekly headroom is split across all of them weighted by
+**RSI depth** — `weight = 30 - rsi`, i.e. how far below the oversold
+threshold the reading is. A pair at RSI 10 gets proportionally far more
+of the budget than one that barely qualified at RSI 28. This was chosen
+over combining RSI depth with EMA-gap trend strength specifically because
+a single factor doesn't require inventing a relative weight between two
+different things with no basis for the exact ratio.
+
+`scalper_agent.py`'s `run()` does this in two passes: pass 1 evaluates
+every pair's signal and collects which ones qualify without sizing or
+placing anything yet; pass 2 computes each candidate's share as
+`headroom × (weight_i / sum(all weights))`, then sizes it against
+`min(MAX_ORDER_NOTIONAL, per_trade_cap, weighted_headroom)` — so a single
+qualifying pair still gets the full normal per-trade cap (its weighted
+share of itself is 100%), and only sharing with others actually divides
+the budget. If a candidate's weighted share would exceed its own
+per-trade cap, it's simply capped there — the leftover is **not**
+redistributed to the other candidates (a known simplification; revisit
+if it turns out to matter in practice).
+
+This addresses within-run concentration by signal strength. It does NOT,
+on its own, prevent one pair from qualifying more often than others
+across many runs over time (e.g. if DOGE/USD's price action happens to
+trip the RSI/EMA/ATR conditions more frequently than BTC/USD does) —
+that's the mechanical signal doing its job, not a bug, and the existing
+category cap (max 2 per category) and 5-position cap already bound how
+much of the account any one pair or category can occupy at once
+regardless of how it got there.
 
 ### Risk-based sizing (informational ceiling, not the operative cap)
 

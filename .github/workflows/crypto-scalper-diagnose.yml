@@ -1,0 +1,39 @@
+name: Crypto Scalper Diagnose Signal
+
+# One-off diagnostic, not part of the permanent pipeline — counts how often
+# each individual buy-trigger condition is true across historical bars, to
+# find which specific condition is the bottleneck when the combined signal
+# fires rarely or never. See crypto-scalper/scripts/diagnose_signal.py.
+on:
+  workflow_dispatch:
+    inputs:
+      pair:
+        description: "Pair to diagnose"
+        required: false
+        default: "BTC/USD"
+      lookback_days:
+        description: "How many days of historical bars"
+        required: false
+        default: "60"
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests python-dotenv
+
+      - name: Run diagnostic
+        env:
+          CRYPTO_APCA_API_KEY_ID: ${{ secrets.CRYPTO_APCA_API_KEY_ID }}
+          CRYPTO_APCA_API_SECRET_KEY: ${{ secrets.CRYPTO_APCA_API_SECRET_KEY }}
+          CRYPTO_APCA_BASE_URL: ${{ secrets.CRYPTO_APCA_BASE_URL }}
+        run: python3 crypto-scalper/scripts/diagnose_signal.py "${{ github.event.inputs.pair || 'BTC/USD' }}" "${{ github.event.inputs.lookback_days || 60 }}"

@@ -133,11 +133,45 @@ faster-turnover strategy on a separate budget.
 ### Leverage
 
 Currently hard-coded to none — the operator was asked and chose cash-only
-as the default when this agent was built (2026-08-02). If leverage is ever
-wanted, that's a deliberate, explicit change to `place_order`'s order
-payload (Alpaca margin/leverage settings), not a parameter to quietly raise
-via env var — treat it with the same weight as pointing this at a live
-account.
+as the default when this agent was built (2026-08-02), and re-confirmed
+this on 2026-08-05 after a specific request to size positions via
+leverage (~133% of equity per trade) was declined. Every order is cash-
+collateralized against `buying_power`; Alpaca doesn't offer margin on
+crypto in any case, so an over-notional order would simply be rejected at
+the exchange, not silently leveraged. If leverage is ever genuinely wanted
+on a different, marginable venue, that's a deliberate, explicit rebuild —
+not a parameter to quietly raise — and should be treated with the same
+weight as pointing this at a live account.
+
+### Risk-based sizing (informational ceiling, not the operative cap)
+
+Added 2026-08-05 at the operator's request: for every `NEW_TRADE`,
+`research.compute_risk_based_qty()` computes the quantity that would risk
+exactly `CRYPTO_TARGET_RISK_PCT` (default 1%) of account equity if the
+0.75% stop-loss is hit — i.e. `qty` such that
+`qty × entry_price × (stop_loss_pct / 100) == target_risk_pct × equity`.
+
+This is deliberately **not** used as the operative position size on its
+own — the final quantity is `min(risk_based_qty, notional_cap_qty)`, where
+`notional_cap_qty` comes from the existing per-trade/daily/weekly caps
+above. With the current 0.75% stop, a 1% risk target implies a position
+worth ~133% of equity — far larger than the 2%-of-buying-power notional
+cap allows — so **in practice the notional cap binds, not the risk
+target**: actual risk per trade works out to roughly 0.015% of equity, not
+1%. This was a deliberate choice (see conversation 2026-08-05) after the
+alternative — loosening the notional cap ~66x so 1% could actually bind —
+was rejected as a real, undisclosed increase in risk-per-trade dressed up
+as a sizing formula.
+
+Every `NEW_TRADE` decision envelope's `risk_sizing` field logs both
+numbers transparently: `target_risk_pct`/`target_risk_dollar` (what was
+asked for) alongside `actual_risk_pct`/`actual_risk_dollar` and
+`binding_constraint` (which cap actually decided the size) — so "why is
+actual risk so far below target" is answerable directly from the journal,
+not hidden by only logging the target. If the notional caps are ever
+raised for a real reason, `binding_constraint` will start reporting
+`risk_target` instead of `notional_cap`, which is the signal that this
+formula has started to actually matter.
 
 ## Execution cadence
 
@@ -219,4 +253,4 @@ at the end of each run — each routine starts from a fresh clone.
   `CRYPTO_DAILY_NOTIONAL_CAP`, `CRYPTO_WEEKLY_NOTIONAL_CAP`,
   `CRYPTO_MAX_POSITIONS`, `CRYPTO_MAX_PER_CATEGORY`, `CRYPTO_PER_TRADE_PCT_CAP`,
   `CRYPTO_MAX_HOLD_HOURS`, `CRYPTO_PROFIT_TARGET_PCT`, `CRYPTO_STOP_LOSS_PCT`,
-  `CRYPTO_ATR_SPIKE_MULTIPLE`.
+  `CRYPTO_ATR_SPIKE_MULTIPLE`, `CRYPTO_TARGET_RISK_PCT`.

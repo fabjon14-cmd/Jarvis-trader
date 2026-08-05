@@ -26,6 +26,7 @@ REQUEST_TIMEOUT = 15
 PROFIT_TARGET_PCT = float(os.getenv("CRYPTO_PROFIT_TARGET_PCT", "1.5"))
 STOP_LOSS_PCT = float(os.getenv("CRYPTO_STOP_LOSS_PCT", "0.75"))
 MAX_HOLD_HOURS = float(os.getenv("CRYPTO_MAX_HOLD_HOURS", "4"))
+TARGET_RISK_PCT = float(os.getenv("CRYPTO_TARGET_RISK_PCT", "1.0"))
 
 
 def _headers():
@@ -245,6 +246,27 @@ def get_signal(pair, timeframe="5Min", limit=80):
     }
 
 
+def compute_risk_based_qty(equity, entry_price, stop_loss_pct, target_risk_pct):
+    """Quantity such that (entry_price - stop_price) * qty == target_risk_pct
+    of equity, where stop_price = entry_price * (1 - stop_loss_pct/100) —
+    i.e. size so a stop-out loses exactly target_risk_pct of equity. This is
+    informational/a ceiling, NOT the operative cap: the existing notional
+    caps (CRYPTO_MAX_ORDER_NOTIONAL, CRYPTO_PER_TRADE_PCT_CAP, daily/weekly
+    headroom) still apply via min(), and given the current 0.75% stop, a 1%
+    risk target implies a position far larger than those caps allow — so in
+    practice the notional caps bind, not this. See crypto-scalper/CLAUDE.md
+    "Risk-based sizing" for the numbers and why that's a deliberate choice,
+    not a bug. Returns 0 if entry_price or stop_loss_pct is 0 (can't size
+    against a zero stop distance).
+    """
+    if not entry_price or not stop_loss_pct or not equity:
+        return 0.0
+    risk_per_unit = entry_price * (stop_loss_pct / 100)
+    if risk_per_unit <= 0:
+        return 0.0
+    return (target_risk_pct / 100 * equity) / risk_per_unit
+
+
 def get_crypto_positions():
     return [p for p in get_positions() if p.get("asset_class") == "crypto" or "/" in (p.get("symbol") or "")]
 
@@ -382,12 +404,14 @@ def check_category_cap(pair, max_per_category=2):
     }
 
 
-def build_decision_envelope(pair, action, signal, account, positions, invalidation_price, reason):
+def build_decision_envelope(pair, action, signal, account, positions, invalidation_price, reason, risk_sizing=None):
     """Assemble the strict JSON decision record for one pair's decision
     this run: portfolio cash/NLV, open positions & exposure by category,
-    technical validation (RSI/EMA20/EMA50 alignment/ATR bounds), and the
-    invalidation (hard stop) price. Logged for every pair on every run —
-    NEW_TRADE, HOLD, and CLOSE alike — not just the ones that traded."""
+    technical validation (RSI/EMA20/EMA50 alignment/ATR bounds), the
+    invalidation (hard stop) price, and — for NEW_TRADE decisions —
+    risk_sizing (target vs. actual risk %, and which constraint bound the
+    final quantity). Logged for every pair on every run — NEW_TRADE, HOLD,
+    and CLOSE alike — not just the ones that traded."""
     exposure_by_category = {}
     for p in positions:
         cat = get_category(p.get("symbol"))
@@ -424,6 +448,7 @@ def build_decision_envelope(pair, action, signal, account, positions, invalidati
         },
         "technical_validation": technical_validation,
         "invalidation_price": invalidation_price,
+        "risk_sizing": risk_sizing,
         "reason": reason,
     }
 

@@ -125,6 +125,7 @@ def run():
         log.append(f"- New-buy evaluation blocked this run: {buy_block_reason}.")
 
     buying_power = float(account.get("buying_power", 0)) if account else 0
+    equity = float(account.get("equity", 0)) if account else 0
     per_trade_cap = buying_power * PER_TRADE_PCT_CAP
 
     for pair in _load_watchlist():
@@ -134,6 +135,8 @@ def run():
             signal = {"pair": pair, "error": str(exc)}
 
         held_position = positions_by_symbol.get(pair)
+        invalidation_price = None
+        risk_sizing = None  # only populated for NEW_TRADE decisions below
 
         if held_position:
             avg_entry = held_position.get("avg_entry_price")
@@ -159,7 +162,6 @@ def run():
                     log.append(f"- {pair}: {reason}")
 
         else:
-            invalidation_price = None
             if signal.get("error"):
                 action, reason = "HOLD", f"signal unavailable ({signal['error']})"
             elif buy_block_reason:
@@ -172,21 +174,41 @@ def run():
                     f"atr_volatility_spike={signal['atr_volatility_spike']}"
                 )
             else:
-                notional = min(MAX_ORDER_NOTIONAL, per_trade_cap, headroom)
-                if notional < MIN_REALISTIC_NOTIONAL:
-                    action, reason = "HOLD", f"buy signal true but sizeable notional ${notional:,.2f} below the ${MIN_REALISTIC_NOTIONAL:.0f} realistic-trade floor"
+                notional_cap = min(MAX_ORDER_NOTIONAL, per_trade_cap, headroom)
+                if notional_cap < MIN_REALISTIC_NOTIONAL:
+                    action, reason = "HOLD", f"buy signal true but sizeable notional ${notional_cap:,.2f} below the ${MIN_REALISTIC_NOTIONAL:.0f} realistic-trade floor"
                 else:
                     limit_price = round(signal["curr_close"] * (1 + LIMIT_SLIPPAGE_BUFFER), 8)
-                    qty = round(notional / limit_price, 6)
+                    qty_from_caps = notional_cap / limit_price
+                    # Risk-based sizing is informational/a ceiling, not the operative
+                    # cap — min() with the existing notional caps below. With the
+                    # current 0.75% stop, a 1% risk target implies a much larger
+                    # position than the notional caps allow, so in practice the caps
+                    # bind; both target and actual risk % are logged so that's
+                    # visible rather than silently overridden. See CLAUDE.md.
+                    risk_based_qty = research.compute_risk_based_qty(equity, limit_price, research.STOP_LOSS_PCT, research.TARGET_RISK_PCT)
+                    qty = round(min(qty_from_caps, risk_based_qty) if risk_based_qty > 0 else qty_from_caps, 6)
+                    notional = qty * limit_price
+                    actual_risk_dollar = round(qty * limit_price * (research.STOP_LOSS_PCT / 100), 2)
+                    risk_sizing = {
+                        "target_risk_pct": research.TARGET_RISK_PCT,
+                        "target_risk_dollar": round(research.TARGET_RISK_PCT / 100 * equity, 2) if equity else None,
+                        "risk_based_qty": round(risk_based_qty, 6) if risk_based_qty else None,
+                        "notional_cap_qty": round(qty_from_caps, 6),
+                        "final_qty": qty,
+                        "binding_constraint": "risk_target" if (risk_based_qty and risk_based_qty < qty_from_caps) else "notional_cap",
+                        "actual_risk_dollar": actual_risk_dollar,
+                        "actual_risk_pct": round(actual_risk_dollar / equity * 100, 4) if equity else None,
+                    }
                     result = trade.place_order(pair, qty, "buy", limit_price)
                     action = "NEW_TRADE"
                     invalidation_price = _invalidation_price(limit_price)
-                    reason = f"rsi={signal['rsi']}<30, crossed above EMA20, EMA20>EMA50, no ATR spike — order {qty} @ limit ${limit_price} (${notional:,.2f}): {json.dumps(result)}"
+                    reason = f"rsi={signal['rsi']}<30, crossed above EMA20, EMA20>EMA50, no ATR spike — order {qty} @ limit ${limit_price} (${notional:,.2f}, actual risk {risk_sizing['actual_risk_pct']}% vs {research.TARGET_RISK_PCT}% target): {json.dumps(result)}"
                     if result.get("placed", True) and not result.get("duplicate"):
                         headroom -= notional
             log.append(f"- {pair}: {'BUY' if action == 'NEW_TRADE' else 'hold'} — {reason}")
 
-        envelopes.append(research.build_decision_envelope(pair, action, signal, account, positions, invalidation_price, reason))
+        envelopes.append(research.build_decision_envelope(pair, action, signal, account, positions, invalidation_price, reason, risk_sizing))
 
     log.append("```json\n" + json.dumps(envelopes, indent=2) + "\n```")
 

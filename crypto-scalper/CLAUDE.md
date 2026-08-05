@@ -1,0 +1,170 @@
+# Crypto Scalper — Project Notes
+
+A second, independent agent from the equities Trader in the repo root — its
+own, separate Alpaca **paper-trading** (fake money) account (own API keys,
+`CRYPTO_APCA_*` env vars, own equity curve), a different strategy, a
+different watchlist, its own risk budget, and its own journal. Do not point
+it at a live account without deliberately deciding to.
+
+This exists because a human asked for an RSI/EMA momentum-scalp strategy,
+which is a fundamentally different risk shape than the equities bot's
+research-driven, hourly, hold-for-days approach. It runs on its own Alpaca
+account specifically so a bug, a runaway loop, or a bad fill in this agent
+can never touch the equities bot's account, and vice versa — full blast-
+radius isolation between the two, not just separate code paths on shared
+capital.
+
+## Tools available
+
+- `scripts/research.py` — `signal PAIR | bars PAIR | positions | deployed | exit-flags | circuit-breaker | max-positions PAIR | account` (read-only). Talks to this agent's own Alpaca account via `CRYPTO_APCA_API_KEY_ID` / `CRYPTO_APCA_API_SECRET_KEY` / `CRYPTO_APCA_BASE_URL` — entirely separate credentials from the equities Trader's `APCA_*` vars.
+- `scripts/trade.py` — `order PAIR QTY SIDE [LIMIT_PRICE]`
+- `agent/scalper_agent.py` — the actual run loop: checks exits, then evaluates new-buy signals, places orders, and appends to the day's journal. This is what gets scheduled.
+- `watchlist.json` — crypto pairs in scope: `BTC/USD`, `ETH/USD`, `SOL/USD`. Don't trade pairs outside it without being told to.
+- `../scripts/notify.py` (shared with the equities bot) — email the day's journal. Call this **at most once a day** (e.g. after the last scheduled firing), not every run — this agent fires far more often than the equities bot's hourly cadence, and per-run emails would be spam.
+
+`scripts/trade.py`'s `place_order` pauses for a human y/N confirmation when
+run interactively. Under `CRYPTO_SCALPER_UNATTENDED=1` (scheduled/cloud runs)
+it auto-approves instead, but only accepts limit orders and enforces every
+cap below in code. A rejection under those caps is expected behavior — log
+it, don't retry with adjusted numbers.
+
+## Strategy — precisely
+
+**Buy trigger:** on the 5-minute timeframe, both must be true on the same
+completed bar:
+- RSI(14) < 30 (Wilder's smoothing, standard 14-period).
+- The close **crosses above** EMA(20) — the previous bar's close was at or
+  below its EMA, and this bar's close is above its EMA. A pair already
+  trading above its EMA with no cross event does not qualify; this is a
+  cross detector, not a level check. (Same precision principle as the
+  equities bot's stabilization-signal definition — a fuzzy "looks like it's
+  turning" is not verifiable, a cross event is.)
+
+**Take-profit:** close the position at **+1.5%** unrealized P/L from cost
+basis (Alpaca's own `unrealized_plpc`, not a derived recalculation).
+
+**Stop-loss:** close the position at **-0.75%** unrealized P/L from cost
+basis. Mechanical, fires on price alone.
+
+**Max hold time:** if a position has been open **4 hours**
+(`CRYPTO_MAX_HOLD_HOURS`) without hitting either threshold, close it anyway.
+Not in the original spec, but a scalp strategy with no time bound can turn
+into indefinite bag-holding on a pair that just chops sideways — this keeps
+the agent's exposure window bounded, in the same spirit as the rest of this
+project's "don't let a soft signal turn into an open-ended risk" approach.
+Reassess this value like any other parameter if it turns out to cut winners
+short in practice.
+
+**No averaging in:** if a pair already has an open position, a new buy
+signal on it is a hold, not an add — one entry per pair at a time. This
+means the strategy can't pyramid into a single name; each pair's exposure is
+capped at one trade's notional regardless of how many times the signal
+fires while it's held.
+
+**No leverage.** Every order trades cash buying power only — nothing in
+`place_order` requests margin, and this should stay that way unless a human
+deliberately decides otherwise (see Leverage note below).
+
+## Risk controls (enforced in code, not just prose)
+
+These mirror the equities bot's philosophy — a well-reasoned trade shouldn't
+be able to talk its way past a mechanical cap — sized down for a smaller,
+faster-turnover strategy on a separate budget.
+
+- **Per-trade cap:** the smaller of `CRYPTO_MAX_ORDER_NOTIONAL` (default
+  $200), 5% of current buying power (`CRYPTO_PER_TRADE_PCT_CAP`), and
+  remaining daily/weekly headroom.
+- **Max concurrent positions:** `CRYPTO_MAX_POSITIONS` (default 3 — one per
+  watchlist pair). A new pair can't open a 4th+ position; adding to an
+  already-held pair is blocked separately by the no-averaging-in rule above.
+- **Daily/weekly notional cap:** `CRYPTO_DAILY_NOTIONAL_CAP` (default $300)
+  and `CRYPTO_WEEKLY_NOTIONAL_CAP` (default $1,500), tracked from this
+  account's own order history — a completely separate budget from the
+  equities bot's $500/day, $3,000/week cap on its own account. Sells are
+  exempt, same reasoning as the equities cap — this bounds new risk, not
+  reducing existing risk.
+- **Circuit breaker:** same thresholds and logic as the equities bot's
+  portfolio-level check (>4% intraday or >8% trailing-5-trading-day drawdown
+  halts new buys), computed independently against this account's own equity
+  curve — a drawdown on one account has no bearing on the other's circuit
+  breaker. Exits are never blocked by this.
+- **Per-run order cap:** `CRYPTO_MAX_ORDERS_PER_RUN` (default 5).
+- **Duplicate-order protection:** same exact-match-today dedup against
+  Alpaca's own order history as the equities bot, for the same reason (a run
+  that crashes after submitting but before journaling shouldn't double a
+  position on restart).
+- **API/data failure handling:** if any check errors or returns nothing
+  usable — signal, exit-flags, circuit-breaker, deployed notional, account —
+  treat that pair as unknown for this run and hold. Never fall back to
+  inferring from price alone or anything else. Log which check failed.
+
+### Leverage
+
+Currently hard-coded to none — the operator was asked and chose cash-only
+as the default when this agent was built (2026-08-02). If leverage is ever
+wanted, that's a deliberate, explicit change to `place_order`'s order
+payload (Alpaca margin/leverage settings), not a parameter to quietly raise
+via env var — treat it with the same weight as pointing this at a live
+account.
+
+## Execution cadence
+
+Runs via `.github/workflows/crypto-scalper.yml` (GitHub Actions), on a
+**5-minute cron** (`*/5 * * * *`), not Claude's Routines/Schedule system —
+that platform enforces a hard 1-hour minimum interval, which ruled it out
+for this agent (discovered 2026-08-05 when a 1-minute cadence was
+originally requested; GitHub Actions' own stated floor is 5 minutes, and
+even that isn't guaranteed exact under load — this is the closest reliable
+approximation available on either platform). `workflow_dispatch` is also
+enabled for manual test runs from the Actions tab. A `concurrency` group
+prevents overlapping runs if one firing takes longer than 5 minutes.
+
+Crypto trades 24/7 (no market-hours gate like the equities bot), so this
+runs around the clock. Since the buy signal is computed on 5-minute bars
+anyway, a 5-minute cadence loses essentially no signal freshness on entries
+versus a tighter poll — it mainly trades off faster **exit** reaction
+(stop-loss/take-profit/timeout would be caught within ~1 minute at a
+1-minute cadence, vs. up to 5 here). It does not loosen any risk cap —
+daily/weekly notional, per-trade %, max-positions, no-averaging-in, and
+duplicate-order protection are all frequency-independent and enforced the
+same regardless of how often this fires.
+
+Credentials (`CRYPTO_APCA_API_KEY_ID` / `CRYPTO_APCA_API_SECRET_KEY` /
+`CRYPTO_APCA_BASE_URL`) are GitHub Actions repository secrets on
+`fabjon14-cmd/Jarvis-trader` — a different secret store from the equities
+bot's credentials, which live in Claude's cloud Environment used by its
+Routines. Set them via `gh secret set NAME --repo fabjon14-cmd/Jarvis-trader`
+or the repo's Settings → Secrets and variables → Actions page. This is a
+paper-account setup; revisit every part of it (cadence, caps, credential
+location) before ever considering a live account.
+
+## Journal format
+
+One file per day: `journal/YYYY-MM-DD.md`, separate from the equities bot's
+`../journal/`. Each run appends a `## Run YYYY-MM-DD HH:MM UTC` section
+(handled automatically by `scalper_agent.py`) rather than overwriting prior
+runs. Every decision — buy, hold, or exit — gets logged with the specific
+number behind it (`rsi=24.1`, `crossed_above_ema20=true`,
+`unrealized_plpc: -0.81%`), same audit-trail standard as the equities bot:
+"why did it hold at 14:15" should be answerable directly from the journal.
+
+If this runs as a scheduled cloud routine, commit and push the journal file
+at the end of each run — each routine starts from a fresh clone.
+
+## Setup notes
+
+- Requires a **second, separate** Alpaca paper account — do not reuse the
+  equities bot's `APCA_API_KEY_ID`/`APCA_API_SECRET_KEY`. Create a new paper
+  account (or a new key pair, if Alpaca is set up to support multiple paper
+  accounts on one login) at
+  https://app.alpaca.markets/paper/dashboard/overview, and set
+  `CRYPTO_APCA_API_KEY_ID` / `CRYPTO_APCA_API_SECRET_KEY` /
+  `CRYPTO_APCA_BASE_URL` in the repo-root `.env` (see `.env.example`).
+- If orders reject with an asset-not-tradable error, crypto trading may need
+  to be enabled on that Alpaca paper account via the Alpaca dashboard —
+  that's an account setting, not something these scripts control.
+- Other new env vars (see root `.env.example`): `CRYPTO_SCALPER_UNATTENDED`,
+  `CRYPTO_MAX_ORDER_NOTIONAL`, `CRYPTO_MAX_ORDERS_PER_RUN`,
+  `CRYPTO_DAILY_NOTIONAL_CAP`, `CRYPTO_WEEKLY_NOTIONAL_CAP`,
+  `CRYPTO_MAX_POSITIONS`, `CRYPTO_PER_TRADE_PCT_CAP`, `CRYPTO_MAX_HOLD_HOURS`,
+  `CRYPTO_PROFIT_TARGET_PCT`, `CRYPTO_STOP_LOSS_PCT`.

@@ -1,0 +1,54 @@
+name: Crypto Scalper
+
+# Fires every 5 minutes — GitHub's own stated floor for scheduled workflows
+# (anything tighter isn't offered, and even 5-minute schedules can slip
+# under load; this is the closest reliable approximation to the originally-
+# requested 1-minute cadence). See crypto-scalper/CLAUDE.md for the strategy
+# and risk controls this runs under. workflow_dispatch allows a manual
+# one-off run for testing.
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: crypto-scalper
+  cancel-in-progress: false
+
+jobs:
+  run-scalper:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests python-dotenv
+
+      - name: Run scalper agent
+        env:
+          CRYPTO_APCA_API_KEY_ID: ${{ secrets.CRYPTO_APCA_API_KEY_ID }}
+          CRYPTO_APCA_API_SECRET_KEY: ${{ secrets.CRYPTO_APCA_API_SECRET_KEY }}
+          CRYPTO_APCA_BASE_URL: ${{ secrets.CRYPTO_APCA_BASE_URL }}
+          CRYPTO_SCALPER_UNATTENDED: "1"
+        run: python3 crypto-scalper/agent/scalper_agent.py
+
+      - name: Commit journal update
+        run: |
+          git config user.name "crypto-scalper-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add crypto-scalper/journal/
+          if git diff --staged --quiet; then
+            echo "No journal changes to commit."
+          else
+            git commit -m "Crypto scalper run $(date -u +'%Y-%m-%d %H:%M UTC')"
+            git push
+          fi

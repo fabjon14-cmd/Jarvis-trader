@@ -128,6 +128,14 @@ def run():
     equity = float(account.get("equity", 0)) if account else 0
     per_trade_cap = buying_power * PER_TRADE_PCT_CAP
 
+    # Pass 1: handle exits (independent per pair, no shared budget) and sort
+    # not-held pairs into immediate holds vs. buy candidates. Candidates are
+    # NOT sized or placed yet — that happens in the even-split pass below, so
+    # a pair earlier in watchlist order (BTC/USD is always first) can't eat
+    # the whole remaining budget before later pairs are even evaluated.
+    results = []  # one dict per pair, in watchlist order
+    candidates = []  # indices into `results` that still need sizing/placement
+
     for pair in _load_watchlist():
         try:
             signal = research.get_signal(pair)
@@ -135,19 +143,18 @@ def run():
             signal = {"pair": pair, "error": str(exc)}
 
         held_position = positions_by_symbol.get(pair)
-        invalidation_price = None
-        risk_sizing = None  # only populated for NEW_TRADE decisions below
+        row = {"pair": pair, "signal": signal, "invalidation_price": None, "risk_sizing": None}
 
         if held_position:
             avg_entry = held_position.get("avg_entry_price")
-            invalidation_price = _invalidation_price(avg_entry)
+            row["invalidation_price"] = _invalidation_price(avg_entry)
             flag = exit_flags_by_symbol.get(pair)
 
             if not flag:
-                action = "HOLD"
                 plpc = float(held_position.get("unrealized_plpc", 0)) * 100
-                reason = f"holding, unrealized {plpc:.2f}%, no exit trigger"
-                log.append(f"- {pair}: {reason}.")
+                row["action"] = "HOLD"
+                row["reason"] = f"holding, unrealized {plpc:.2f}%, no exit trigger"
+                row["log_line"] = f"- {pair}: {row['reason']}."
             else:
                 try:
                     ref_price = research.get_crypto_bars(pair, limit=2)[-1]["c"]
@@ -165,62 +172,103 @@ def run():
                         limit_price = round(ref_price * (1 - LIMIT_SLIPPAGE_BUFFER), 8)
                         result = trade.place_order(pair, flag["qty"], "sell", limit_price)
                         price_desc = f"limit ${limit_price}"
-                    action = "CLOSE"
-                    reason = f"{flag['action']} ({flag['reason']}) -> sell {flag['qty']} @ {price_desc}: {json.dumps(result)}"
-                    log.append(f"- {pair}: EXIT {reason}")
+                    row["action"] = "CLOSE"
+                    row["reason"] = f"{flag['action']} ({flag['reason']}) -> sell {flag['qty']} @ {price_desc}: {json.dumps(result)}"
+                    row["log_line"] = f"- {pair}: EXIT {row['reason']}"
                 except Exception as exc:
-                    action = "HOLD"
-                    reason = f"exit triggered ({flag['reason']}) but could not fetch a reference price/place the order ({exc}) — HOLDING, not guessing a sell price."
-                    log.append(f"- {pair}: {reason}")
+                    row["action"] = "HOLD"
+                    row["reason"] = f"exit triggered ({flag['reason']}) but could not fetch a reference price/place the order ({exc}) — HOLDING, not guessing a sell price."
+                    row["log_line"] = f"- {pair}: {row['reason']}"
 
+            results.append(row)
+            continue
+
+        if signal.get("error"):
+            row["action"], row["reason"] = "HOLD", f"signal unavailable ({signal['error']})"
+        elif buy_block_reason:
+            row["action"], row["reason"] = "HOLD", buy_block_reason
+        elif not signal["buy_signal"]:
+            row["action"], row["reason"] = "HOLD", (
+                f"rsi={signal['rsi']} (oversold={signal['rsi_oversold']}), "
+                f"crossed_above_ema20={signal['crossed_above_ema']}, "
+                f"ema_alignment_bullish={signal['ema_alignment_bullish']}, "
+                f"atr_volatility_spike={signal['atr_volatility_spike']}"
+            )
         else:
-            if signal.get("error"):
-                action, reason = "HOLD", f"signal unavailable ({signal['error']})"
-            elif buy_block_reason:
-                action, reason = "HOLD", buy_block_reason
-            elif not signal["buy_signal"]:
-                action, reason = "HOLD", (
-                    f"rsi={signal['rsi']} (oversold={signal['rsi_oversold']}), "
-                    f"crossed_above_ema20={signal['crossed_above_ema']}, "
-                    f"ema_alignment_bullish={signal['ema_alignment_bullish']}, "
-                    f"atr_volatility_spike={signal['atr_volatility_spike']}"
-                )
-            else:
-                notional_cap = min(MAX_ORDER_NOTIONAL, per_trade_cap, headroom)
-                if notional_cap < MIN_REALISTIC_NOTIONAL:
-                    action, reason = "HOLD", f"buy signal true but sizeable notional ${notional_cap:,.2f} below the ${MIN_REALISTIC_NOTIONAL:.0f} realistic-trade floor"
-                else:
-                    limit_price = round(signal["curr_close"] * (1 + LIMIT_SLIPPAGE_BUFFER), 8)
-                    qty_from_caps = notional_cap / limit_price
-                    # Risk-based sizing is informational/a ceiling, not the operative
-                    # cap — min() with the existing notional caps below. With the
-                    # current 0.75% stop, a 1% risk target implies a much larger
-                    # position than the notional caps allow, so in practice the caps
-                    # bind; both target and actual risk % are logged so that's
-                    # visible rather than silently overridden. See CLAUDE.md.
-                    risk_based_qty = research.compute_risk_based_qty(equity, limit_price, research.STOP_LOSS_PCT, research.TARGET_RISK_PCT)
-                    qty = round(min(qty_from_caps, risk_based_qty) if risk_based_qty > 0 else qty_from_caps, 6)
-                    notional = qty * limit_price
-                    actual_risk_dollar = round(qty * limit_price * (research.STOP_LOSS_PCT / 100), 2)
-                    risk_sizing = {
-                        "target_risk_pct": research.TARGET_RISK_PCT,
-                        "target_risk_dollar": round(research.TARGET_RISK_PCT / 100 * equity, 2) if equity else None,
-                        "risk_based_qty": round(risk_based_qty, 6) if risk_based_qty else None,
-                        "notional_cap_qty": round(qty_from_caps, 6),
-                        "final_qty": qty,
-                        "binding_constraint": "risk_target" if (risk_based_qty and risk_based_qty < qty_from_caps) else "notional_cap",
-                        "actual_risk_dollar": actual_risk_dollar,
-                        "actual_risk_pct": round(actual_risk_dollar / equity * 100, 4) if equity else None,
-                    }
-                    result = trade.place_order(pair, qty, "buy", limit_price)
-                    action = "NEW_TRADE"
-                    invalidation_price = _invalidation_price(limit_price)
-                    reason = f"rsi={signal['rsi']}<30, crossed above EMA20, EMA20>EMA50, no ATR spike — order {qty} @ limit ${limit_price} (${notional:,.2f}, actual risk {risk_sizing['actual_risk_pct']}% vs {research.TARGET_RISK_PCT}% target): {json.dumps(result)}"
-                    if result.get("placed", True) and not result.get("duplicate"):
-                        headroom -= notional
-            log.append(f"- {pair}: {'BUY' if action == 'NEW_TRADE' else 'hold'} — {reason}")
+            results.append(row)  # action/reason/log_line filled in below
+            candidates.append(len(results) - 1)
+            continue
 
-        envelopes.append(research.build_decision_envelope(pair, action, signal, account, positions, invalidation_price, reason, risk_sizing))
+        row["log_line"] = f"- {pair}: hold — {row['reason']}"
+        results.append(row)
+
+    # Pass 2: even-split allocation across every pair that qualified THIS
+    # run. Each candidate still respects its own normal per-trade cap
+    # (MAX_ORDER_NOTIONAL / PER_TRADE_PCT_CAP) — this only changes how the
+    # shared daily/weekly headroom divides when more than one pair qualifies
+    # at once, instead of first-come-first-served down the watchlist.
+    if candidates:
+        split_headroom = headroom / len(candidates)
+        qualifying_pairs = ", ".join(results[i]["pair"] for i in candidates)
+        log.append(
+            f"- {len(candidates)} pair(s) qualified for a buy this run ({qualifying_pairs}) — "
+            f"splitting ${headroom:,.2f} headroom evenly (${split_headroom:,.2f} each) rather than first-come-first-served."
+        )
+
+    for idx in candidates:
+        row = results[idx]
+        pair, signal = row["pair"], row["signal"]
+        notional_cap = min(MAX_ORDER_NOTIONAL, per_trade_cap, split_headroom)
+
+        if notional_cap < MIN_REALISTIC_NOTIONAL:
+            row["action"] = "HOLD"
+            row["reason"] = (
+                f"buy signal true but this pair's even split (${notional_cap:,.2f} of "
+                f"${headroom:,.2f} across {len(candidates)} qualifying pairs) is below the "
+                f"${MIN_REALISTIC_NOTIONAL:.0f} realistic-trade floor"
+            )
+            row["log_line"] = f"- {pair}: hold — {row['reason']}"
+            continue
+
+        limit_price = round(signal["curr_close"] * (1 + LIMIT_SLIPPAGE_BUFFER), 8)
+        qty_from_caps = notional_cap / limit_price
+        # Risk-based sizing is informational/a ceiling, not the operative
+        # cap — min() with the existing notional caps below. With the
+        # current 0.75% stop, a 1% risk target implies a much larger
+        # position than the notional caps allow, so in practice the caps
+        # bind; both target and actual risk % are logged so that's
+        # visible rather than silently overridden. See CLAUDE.md.
+        risk_based_qty = research.compute_risk_based_qty(equity, limit_price, research.STOP_LOSS_PCT, research.TARGET_RISK_PCT)
+        qty = round(min(qty_from_caps, risk_based_qty) if risk_based_qty > 0 else qty_from_caps, 6)
+        notional = qty * limit_price
+        actual_risk_dollar = round(qty * limit_price * (research.STOP_LOSS_PCT / 100), 2)
+        risk_sizing = {
+            "target_risk_pct": research.TARGET_RISK_PCT,
+            "target_risk_dollar": round(research.TARGET_RISK_PCT / 100 * equity, 2) if equity else None,
+            "risk_based_qty": round(risk_based_qty, 6) if risk_based_qty else None,
+            "notional_cap_qty": round(qty_from_caps, 6),
+            "final_qty": qty,
+            "binding_constraint": "risk_target" if (risk_based_qty and risk_based_qty < qty_from_caps) else "notional_cap",
+            "actual_risk_dollar": actual_risk_dollar,
+            "actual_risk_pct": round(actual_risk_dollar / equity * 100, 4) if equity else None,
+        }
+        result = trade.place_order(pair, qty, "buy", limit_price)
+        row["action"] = "NEW_TRADE"
+        row["invalidation_price"] = _invalidation_price(limit_price)
+        row["risk_sizing"] = risk_sizing
+        row["reason"] = (
+            f"rsi={signal['rsi']}<30, crossed above EMA20, EMA20>EMA50, no ATR spike — "
+            f"order {qty} @ limit ${limit_price} (${notional:,.2f}, even split across {len(candidates)} "
+            f"qualifying pair(s), actual risk {risk_sizing['actual_risk_pct']}% vs {research.TARGET_RISK_PCT}% target): {json.dumps(result)}"
+        )
+        row["log_line"] = f"- {pair}: BUY — {row['reason']}"
+
+    for row in results:
+        log.append(row["log_line"])
+        envelopes.append(research.build_decision_envelope(
+            row["pair"], row["action"], row["signal"], account, positions,
+            row["invalidation_price"], row["reason"], row["risk_sizing"],
+        ))
 
     log.append("```json\n" + json.dumps(envelopes, indent=2) + "\n```")
 

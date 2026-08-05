@@ -47,7 +47,7 @@ MAX_ORDERS_PER_RUN = int(os.getenv("CRYPTO_MAX_ORDERS_PER_RUN", "5"))
 DAILY_NOTIONAL_CAP = float(os.getenv("CRYPTO_DAILY_NOTIONAL_CAP", "300"))
 WEEKLY_NOTIONAL_CAP = float(os.getenv("CRYPTO_WEEKLY_NOTIONAL_CAP", "1500"))
 MAX_POSITIONS = int(os.getenv("CRYPTO_MAX_POSITIONS", "5"))
-PER_TRADE_PCT_CAP = float(os.getenv("CRYPTO_PER_TRADE_PCT_CAP", "0.02"))  # 2% of buying power
+PER_TRADE_PCT_CAP = float(os.getenv("CRYPTO_PER_TRADE_PCT_CAP", "0.10"))  # 10% of buying power
 MAX_PER_CATEGORY = int(os.getenv("CRYPTO_MAX_PER_CATEGORY", "2"))
 _orders_this_run = 0
 

@@ -112,9 +112,13 @@ be able to talk its way past a mechanical cap — sized down for a smaller,
 faster-turnover strategy on a separate budget.
 
 - **Per-trade cap:** the smaller of `CRYPTO_MAX_ORDER_NOTIONAL` (default
-  $200), 2% of current buying power (`CRYPTO_PER_TRADE_PCT_CAP`, lowered
-  from an initial 5% on 2026-08-05 at the operator's request), and
-  remaining daily/weekly headroom.
+  $200), 10% of current buying power (`CRYPTO_PER_TRADE_PCT_CAP` — lowered
+  from an initial 5% to 2% on 2026-08-05, then raised to 10% later the same
+  day at the operator's explicit request; on the ~$1,000 paper account this
+  moved typical position size from ~$20 to ~$100, still under the $200
+  notional cap so the % cap now actually binds), and this pair's even
+  split of the remaining daily/weekly headroom (see "Even-split allocation"
+  below).
 - **Max concurrent positions:** `CRYPTO_MAX_POSITIONS` (default 5, raised
   from 3 on 2026-08-05 to accommodate the expanded 8-pair/3-category
   watchlist — a cap of 3 on 8 pairs would have made the category cap below
@@ -160,6 +164,31 @@ the exchange, not silently leveraged. If leverage is ever genuinely wanted
 on a different, marginable venue, that's a deliberate, explicit rebuild —
 not a parameter to quietly raise — and should be treated with the same
 weight as pointing this at a live account.
+
+### Even-split allocation across simultaneous signals (added 2026-08-05)
+
+Per the operator's request that the strategy not "focus on investing in
+one" pair: if more than one watchlist pair qualifies for a buy in the
+SAME run, the remaining daily/weekly headroom is split evenly across all
+of them, not given first-come-first-served to whichever pair happens to
+be earlier in `watchlist.json` (BTC/USD is always first in that file, so
+without this it would have had a structural, order-of-iteration advantage
+with no basis in signal strength). `scalper_agent.py`'s `run()` does this
+in two passes: pass 1 evaluates every pair's signal and collects which
+ones qualify without sizing or placing anything yet; pass 2 divides
+`headroom / len(candidates)` and sizes each qualifying pair against
+`min(MAX_ORDER_NOTIONAL, per_trade_cap, split_headroom)` — so a single
+qualifying pair still gets the full normal per-trade cap (split among 1
+is just itself), and only sharing with others actually divides the
+budget.
+
+This addresses within-run concentration. It does NOT, on its own, prevent
+one pair from qualifying more often than others across many runs over
+time (e.g. if DOGE/USD's price action happens to trip the RSI/EMA/ATR
+conditions more frequently than BTC/USD does) — that's the mechanical
+signal doing its job, not a bug, and the existing category cap (max 2 per
+category) and 5-position cap already bound how much of the account any
+one pair or category can occupy at once regardless of how it got there.
 
 ### Risk-based sizing (informational ceiling, not the operative cap)
 

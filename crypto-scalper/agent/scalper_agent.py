@@ -1,10 +1,14 @@
 # crypto-scalper/agent/scalper_agent.py
 #
 # Decision loop for the crypto scalper — RSI(14)/EMA(20) cross-above buy
-# trigger, +1.5% take-profit / -0.75% stop-loss exit, run on a schedule (not
+# trigger with EMA(20)/EMA(50) trend-alignment and ATR(14) volatility-spike
+# filters, +1.5% take-profit / -0.75% stop-loss exit, run on a schedule (not
 # a bare `while True: sleep(120)` loop — see crypto-scalper/CLAUDE.md for why).
 # Mirrors the equities Trader's audit-trail discipline: every decision this
-# run makes gets logged, not just the trades that went through.
+# run makes gets logged, not just the trades that went through — as both a
+# plain-English journal line and a strict JSON decision envelope (portfolio
+# cash/NLV, positions & category exposure, technical validation, invalidation
+# price) for every pair, every run, per the operator's decision-workflow spec.
 
 import os
 import sys
@@ -59,9 +63,29 @@ def _append_journal(lines):
     return path
 
 
+def _invalidation_price(entry_price):
+    if not entry_price:
+        return None
+    return round(float(entry_price) * (1 - research.STOP_LOSS_PCT / 100), 8)
+
+
 def run():
     now = datetime.now(timezone.utc)
     log = [f"## Run {now.strftime('%Y-%m-%d %H:%M UTC')}"]
+    envelopes = []
+
+    try:
+        account = research.get_account()
+    except Exception as exc:
+        log.append(f"- Could not fetch account ({exc}) — envelopes this run will show a null portfolio snapshot.")
+        account = {}
+
+    try:
+        positions = research.get_crypto_positions()
+    except Exception as exc:
+        log.append(f"- Could not fetch positions ({exc}) — treating all pairs as unheld for this run (exit checks below will also reflect this).")
+        positions = []
+    positions_by_symbol = {p["symbol"]: p for p in positions}
 
     try:
         cb = research.get_circuit_breaker_status()
@@ -75,86 +99,96 @@ def run():
     # — same principle as the equities stop-loss: a mandatory exit is never
     # blocked by a buy-side gate.
     try:
-        exit_flags = research.get_exit_flags()
+        exit_flags_by_symbol = {f["symbol"]: f for f in research.get_exit_flags()}
     except Exception as exc:
         log.append(f"- Exit-flag check FAILED ({exc}) — holding all positions this run rather than guessing.")
-        exit_flags = []
+        exit_flags_by_symbol = {}
 
-    for flag in exit_flags:
-        symbol = flag["symbol"]
-        try:
-            bars = research.get_crypto_bars(symbol, limit=2)
-            ref_price = bars[-1]["c"]
-        except Exception as exc:
-            log.append(f"- {symbol}: exit triggered ({flag['reason']}) but could not fetch a reference price ({exc}) — HOLDING, not guessing a sell price.")
-            continue
-        limit_price = round(ref_price * (1 - LIMIT_SLIPPAGE_BUFFER), 8)
-        result = trade.place_order(symbol, flag["qty"], "sell", limit_price)
-        log.append(f"- {symbol}: EXIT {flag['action']} ({flag['reason']}) -> sell {flag['qty']} @ limit ${limit_price}: {json.dumps(result)}")
-
-    # Budget-aware evaluation: skip the full new-buy sweep if there's no
-    # realistic headroom left, same efficiency principle as the equities bot.
+    # Budget-aware evaluation: compute once whether new-buy evaluation is
+    # blocked at all (circuit breaker or exhausted daily/weekly headroom),
+    # same efficiency principle as the equities bot's budget-aware sweep.
     try:
         deployed = research.get_crypto_deployed_notional()
         daily_headroom = DAILY_NOTIONAL_CAP - deployed["daily_deployed"]
         weekly_headroom = WEEKLY_NOTIONAL_CAP - deployed["weekly_deployed"]
         headroom = max(0, min(daily_headroom, weekly_headroom))
     except Exception as exc:
-        log.append(f"- Could not compute deployed notional ({exc}) — skipping new-buy evaluation this run, holding.")
+        log.append(f"- Could not compute deployed notional ({exc}) — new-buy evaluation blocked this run, holding.")
         headroom = 0
 
+    buy_block_reason = None
     if cb.get("halted"):
-        log.append("- New-buy evaluation skipped: circuit breaker halted.")
+        buy_block_reason = f"circuit breaker halted: {'; '.join(cb.get('reasons', []))}"
     elif headroom < MIN_REALISTIC_NOTIONAL:
-        log.append(f"- Daily/weekly headroom ${headroom:,.2f} remaining — below the ${MIN_REALISTIC_NOTIONAL:.0f} realistic-trade floor, skipping new-buy evaluation this run.")
-    else:
+        buy_block_reason = f"daily/weekly headroom ${headroom:,.2f} below ${MIN_REALISTIC_NOTIONAL:.0f} realistic-trade floor"
+    if buy_block_reason:
+        log.append(f"- New-buy evaluation blocked this run: {buy_block_reason}.")
+
+    buying_power = float(account.get("buying_power", 0)) if account else 0
+    per_trade_cap = buying_power * PER_TRADE_PCT_CAP
+
+    for pair in _load_watchlist():
         try:
-            account = research.get_account()
-            buying_power = float(account.get("buying_power", 0))
+            signal = research.get_signal(pair)
         except Exception as exc:
-            log.append(f"- Could not fetch buying power ({exc}) — skipping new-buy evaluation this run, holding.")
-            buying_power = 0
+            signal = {"pair": pair, "error": str(exc)}
 
-        if buying_power > 0:
-            per_trade_cap = buying_power * PER_TRADE_PCT_CAP
-            pairs = _load_watchlist()
-            held = {p["symbol"] for p in research.get_crypto_positions()}
+        held_position = positions_by_symbol.get(pair)
 
-            for pair in pairs:
-                if pair in held:
-                    log.append(f"- {pair}: already holding a position — no add/re-entry, skipped new-buy evaluation (exit handled above if triggered).")
-                    continue
+        if held_position:
+            avg_entry = held_position.get("avg_entry_price")
+            invalidation_price = _invalidation_price(avg_entry)
+            flag = exit_flags_by_symbol.get(pair)
 
+            if not flag:
+                action = "HOLD"
+                plpc = float(held_position.get("unrealized_plpc", 0)) * 100
+                reason = f"holding, unrealized {plpc:.2f}%, no exit trigger"
+                log.append(f"- {pair}: {reason}.")
+            else:
                 try:
-                    signal = research.get_signal(pair)
+                    ref_price = research.get_crypto_bars(pair, limit=2)[-1]["c"]
+                    limit_price = round(ref_price * (1 - LIMIT_SLIPPAGE_BUFFER), 8)
+                    result = trade.place_order(pair, flag["qty"], "sell", limit_price)
+                    action = "CLOSE"
+                    reason = f"{flag['action']} ({flag['reason']}) -> sell {flag['qty']} @ limit ${limit_price}: {json.dumps(result)}"
+                    log.append(f"- {pair}: EXIT {reason}")
                 except Exception as exc:
-                    log.append(f"- {pair}: signal check FAILED ({exc}) — holding, not inferring from anything else.")
-                    continue
-                if signal.get("error"):
-                    log.append(f"- {pair}: signal unavailable ({signal['error']}) — holding.")
-                    continue
-                if not signal["buy_signal"]:
-                    log.append(
-                        f"- {pair}: hold — rsi={signal['rsi']} (oversold={signal['rsi_oversold']}), "
-                        f"crossed_above_ema20={signal['crossed_above_ema']} (close {signal['curr_close']} vs ema {signal['ema20']})."
-                    )
-                    continue
+                    action = "HOLD"
+                    reason = f"exit triggered ({flag['reason']}) but could not fetch a reference price/place the order ({exc}) — HOLDING, not guessing a sell price."
+                    log.append(f"- {pair}: {reason}")
 
+        else:
+            invalidation_price = None
+            if signal.get("error"):
+                action, reason = "HOLD", f"signal unavailable ({signal['error']})"
+            elif buy_block_reason:
+                action, reason = "HOLD", buy_block_reason
+            elif not signal["buy_signal"]:
+                action, reason = "HOLD", (
+                    f"rsi={signal['rsi']} (oversold={signal['rsi_oversold']}), "
+                    f"crossed_above_ema20={signal['crossed_above_ema']}, "
+                    f"ema_alignment_bullish={signal['ema_alignment_bullish']}, "
+                    f"atr_volatility_spike={signal['atr_volatility_spike']}"
+                )
+            else:
                 notional = min(MAX_ORDER_NOTIONAL, per_trade_cap, headroom)
                 if notional < MIN_REALISTIC_NOTIONAL:
-                    log.append(f"- {pair}: buy signal true (rsi={signal['rsi']}, crossed above EMA20) but sizeable notional ${notional:,.2f} is below the realistic-trade floor — holding.")
-                    continue
+                    action, reason = "HOLD", f"buy signal true but sizeable notional ${notional:,.2f} below the ${MIN_REALISTIC_NOTIONAL:.0f} realistic-trade floor"
+                else:
+                    limit_price = round(signal["curr_close"] * (1 + LIMIT_SLIPPAGE_BUFFER), 8)
+                    qty = round(notional / limit_price, 6)
+                    result = trade.place_order(pair, qty, "buy", limit_price)
+                    action = "NEW_TRADE"
+                    invalidation_price = _invalidation_price(limit_price)
+                    reason = f"rsi={signal['rsi']}<30, crossed above EMA20, EMA20>EMA50, no ATR spike — order {qty} @ limit ${limit_price} (${notional:,.2f}): {json.dumps(result)}"
+                    if result.get("placed", True) and not result.get("duplicate"):
+                        headroom -= notional
+            log.append(f"- {pair}: {'BUY' if action == 'NEW_TRADE' else 'hold'} — {reason}")
 
-                limit_price = round(signal["curr_close"] * (1 + LIMIT_SLIPPAGE_BUFFER), 8)
-                qty = round(notional / limit_price, 6)
-                result = trade.place_order(pair, qty, "buy", limit_price)
-                log.append(
-                    f"- {pair}: BUY signal — rsi={signal['rsi']} < 30, crossed above EMA20 "
-                    f"(close {signal['curr_close']} vs ema {signal['ema20']}). "
-                    f"Order: {qty} @ limit ${limit_price} (${notional:,.2f} notional): {json.dumps(result)}"
-                )
-                if result.get("placed", True) and not result.get("duplicate"):
-                    headroom -= notional
+        envelopes.append(research.build_decision_envelope(pair, action, signal, account, positions, invalidation_price, reason))
+
+    log.append("```json\n" + json.dumps(envelopes, indent=2) + "\n```")
 
     path = _append_journal(log)
     print("\n".join(log))

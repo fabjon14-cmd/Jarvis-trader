@@ -1,3 +1,7 @@
 {
-  "pairs": ["BTC/USD", "ETH/USD", "SOL/USD"]
+  "pairs": [
+    "BTC/USD", "ETH/USD", "SOL/USD", "AVAX/USD", "DOT/USD",
+    "LINK/USD", "UNI/USD",
+    "DOGE/USD"
+  ]
 }

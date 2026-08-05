@@ -162,36 +162,86 @@ def compute_ema_series(closes, period=20):
     return ema
 
 
-def get_signal(pair, timeframe="5Min", limit=60):
-    """Buy trigger, precisely: RSI(14) on the latest completed bar is below
-    30, AND the close crosses above EMA(20) on this bar (previous bar's
-    close was at or below its EMA, this bar's close is above its EMA) — a
-    cross event, not merely "currently above". Both conditions must be true
-    on the same bar."""
+def compute_atr_series(bars, period=14):
+    """Wilder-smoothed ATR(14) from OHLC bars. True range for bar i needs
+    bar i-1's close, so the series has one fewer element than `bars`;
+    Wilder smoothing then needs `period` of those to seed. Returned series
+    is aligned to bars[period:], i.e. atr[-1] corresponds to bars[-1]."""
+    if len(bars) < period + 2:
+        return []
+    trs = []
+    for i in range(1, len(bars)):
+        high, low, prev_close = bars[i]["h"], bars[i]["l"], bars[i - 1]["c"]
+        trs.append(max(high - low, abs(high - prev_close), abs(low - prev_close)))
+    if len(trs) < period:
+        return []
+    atr = [sum(trs[:period]) / period]
+    for tr in trs[period:]:
+        atr.append((atr[-1] * (period - 1) + tr) / period)
+    return atr
+
+
+ATR_SPIKE_MULTIPLE = float(os.getenv("CRYPTO_ATR_SPIKE_MULTIPLE", "2.0"))
+
+
+def get_signal(pair, timeframe="5Min", limit=80):
+    """Buy trigger, precisely — ALL of the following on the same completed
+    bar:
+    - RSI(14) < 30 (oversold).
+    - Close crosses above EMA(20) — previous bar's close was at or below
+      its EMA, this bar's close is above it. A cross event, not merely
+      "currently above".
+    - EMA(20) > EMA(50) — short-term trend is above the long-term trend
+      ("bullish alignment"), so this is a dip-buy within an uptrend
+      regime, not a bottom-call against the broader trend.
+    - NOT an ATR volatility spike: ATR(14) is not more than
+      `CRYPTO_ATR_SPIKE_MULTIPLE` (default 2x) its own trailing 20-period
+      average — skips entries during a volatility/news shock, where RSI
+      and EMA behave unreliably.
+
+    Needs more history than RSI/EMA20 alone (EMA50 seed + a 20-period ATR
+    average), hence the higher default `limit` than earlier versions of
+    this function used.
+    """
     bars = get_crypto_bars(pair, timeframe, limit)
     closes = [b["c"] for b in bars]
-    if len(closes) < 25:
-        return {"pair": pair, "error": f"only {len(closes)} bars available, need at least 25"}
+    if len(closes) < 55:
+        return {"pair": pair, "error": f"only {len(closes)} bars available, need at least 55"}
 
     rsi = compute_rsi(closes, 14)
-    ema_series = compute_ema_series(closes, 20)
-    if rsi is None or len(ema_series) < 2:
-        return {"pair": pair, "error": "insufficient data for RSI/EMA"}
+    ema20_series = compute_ema_series(closes, 20)
+    ema50_series = compute_ema_series(closes, 50)
+    atr_series = compute_atr_series(bars, 14)
+    if rsi is None or len(ema20_series) < 2 or not ema50_series or len(atr_series) < 20:
+        return {"pair": pair, "error": "insufficient data for RSI/EMA/ATR"}
 
     prev_close, curr_close = closes[-2], closes[-1]
-    prev_ema, curr_ema = ema_series[-2], ema_series[-1]
-    crossed_above = prev_close <= prev_ema and curr_close > curr_ema
+    prev_ema20, curr_ema20 = ema20_series[-2], ema20_series[-1]
+    curr_ema50 = ema50_series[-1]
+    crossed_above = prev_close <= prev_ema20 and curr_close > curr_ema20
     rsi_oversold = rsi < 30
+    ema_alignment_bullish = curr_ema20 > curr_ema50
+
+    curr_atr = atr_series[-1]
+    atr_avg20 = sum(atr_series[-20:]) / 20
+    atr_volatility_spike = atr_avg20 > 0 and curr_atr > ATR_SPIKE_MULTIPLE * atr_avg20
+
+    buy_signal = rsi_oversold and crossed_above and ema_alignment_bullish and not atr_volatility_spike
 
     return {
         "pair": pair,
         "rsi": round(rsi, 2),
         "rsi_oversold": rsi_oversold,
-        "ema20": round(curr_ema, 4),
+        "ema20": round(curr_ema20, 4),
+        "ema50": round(curr_ema50, 4),
+        "ema_alignment_bullish": ema_alignment_bullish,
         "prev_close": prev_close,
         "curr_close": curr_close,
         "crossed_above_ema": crossed_above,
-        "buy_signal": rsi_oversold and crossed_above,
+        "atr14": round(curr_atr, 6),
+        "atr14_avg20": round(atr_avg20, 6),
+        "atr_volatility_spike": atr_volatility_spike,
+        "buy_signal": buy_signal,
     }
 
 
@@ -295,6 +345,89 @@ def check_max_positions(pair, max_positions):
     }
 
 
+_CATEGORY_MAP = None
+
+
+def _load_categories():
+    global _CATEGORY_MAP
+    if _CATEGORY_MAP is None:
+        path = os.path.join(os.path.dirname(__file__), "..", "categories.json")
+        with open(path) as f:
+            _CATEGORY_MAP = json.load(f)
+    return _CATEGORY_MAP
+
+
+def get_category(pair):
+    return _load_categories().get(pair, "Unknown")
+
+
+def check_category_cap(pair, max_per_category=2):
+    """Would opening a NEW position in `pair` push its category above
+    `max_per_category` of the open positions? Mirrors the equities bot's
+    sector cap exactly — only relevant for pairs not already held; adding
+    to an existing position doesn't change the category count."""
+    category = get_category(pair)
+    positions = get_crypto_positions()
+    held_symbols = {p["symbol"] for p in positions}
+    if pair in held_symbols:
+        return {"pair": pair, "category": category, "blocked": False, "reason": None}
+    same_category_count = sum(1 for p in positions if get_category(p["symbol"]) == category)
+    blocked = same_category_count >= max_per_category
+    return {
+        "pair": pair,
+        "category": category,
+        "current_same_category_positions": same_category_count,
+        "blocked": blocked,
+        "reason": f"already {same_category_count} open position(s) in {category}" if blocked else None,
+    }
+
+
+def build_decision_envelope(pair, action, signal, account, positions, invalidation_price, reason):
+    """Assemble the strict JSON decision record for one pair's decision
+    this run: portfolio cash/NLV, open positions & exposure by category,
+    technical validation (RSI/EMA20/EMA50 alignment/ATR bounds), and the
+    invalidation (hard stop) price. Logged for every pair on every run —
+    NEW_TRADE, HOLD, and CLOSE alike — not just the ones that traded."""
+    exposure_by_category = {}
+    for p in positions:
+        cat = get_category(p.get("symbol"))
+        exposure_by_category[cat] = exposure_by_category.get(cat, 0) + float(p.get("market_value", 0))
+
+    technical_validation = None
+    if signal and not signal.get("error"):
+        technical_validation = {
+            "rsi14": signal.get("rsi"),
+            "rsi_oversold": signal.get("rsi_oversold"),
+            "ema20": signal.get("ema20"),
+            "ema50": signal.get("ema50"),
+            "ema_alignment_bullish": signal.get("ema_alignment_bullish"),
+            "crossed_above_ema20": signal.get("crossed_above_ema"),
+            "atr14": signal.get("atr14"),
+            "atr14_avg20": signal.get("atr14_avg20"),
+            "atr_volatility_spike": signal.get("atr_volatility_spike"),
+        }
+    elif signal and signal.get("error"):
+        technical_validation = {"error": signal["error"]}
+
+    return {
+        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "pair": pair,
+        "category": get_category(pair),
+        "action": action,
+        "portfolio": {
+            "cash": float(account.get("cash", 0)) if account else None,
+            "net_liquidation_value": float(account.get("equity", 0)) if account else None,
+        },
+        "positions": {
+            "open_count": len(positions),
+            "exposure_by_category": {k: round(v, 2) for k, v in exposure_by_category.items()},
+        },
+        "technical_validation": technical_validation,
+        "invalidation_price": invalidation_price,
+        "reason": reason,
+    }
+
+
 if __name__ == "__main__":
     action = sys.argv[1] if len(sys.argv) > 1 else "account"
     pair = sys.argv[2] if len(sys.argv) > 2 else None
@@ -312,9 +445,11 @@ if __name__ == "__main__":
     elif action == "circuit-breaker":
         print(json.dumps(get_circuit_breaker_status()))
     elif action == "max-positions" and pair:
-        max_positions = int(os.getenv("CRYPTO_MAX_POSITIONS", "3"))
+        max_positions = int(os.getenv("CRYPTO_MAX_POSITIONS", "5"))
         print(json.dumps(check_max_positions(pair, max_positions)))
+    elif action == "category-cap" and pair:
+        print(json.dumps(check_category_cap(pair)))
     elif action == "account":
         print(json.dumps(get_account()))
     else:
-        print("Usage: research.py signal PAIR | bars PAIR | positions | deployed | exit-flags | circuit-breaker | max-positions PAIR | account")
+        print("Usage: research.py signal PAIR | bars PAIR | positions | deployed | exit-flags | circuit-breaker | max-positions PAIR | category-cap PAIR | account")

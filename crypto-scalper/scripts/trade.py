@@ -27,6 +27,7 @@ _spec.loader.exec_module(_crypto_research)
 
 get_crypto_deployed_notional = _crypto_research.get_crypto_deployed_notional
 check_max_positions = _crypto_research.check_max_positions
+check_category_cap = _crypto_research.check_category_cap
 get_crypto_positions = _crypto_research.get_crypto_positions
 get_circuit_breaker_status = _crypto_research.get_circuit_breaker_status
 get_orders = _crypto_research.get_orders
@@ -45,8 +46,9 @@ MAX_ORDER_NOTIONAL = float(os.getenv("CRYPTO_MAX_ORDER_NOTIONAL", "200"))
 MAX_ORDERS_PER_RUN = int(os.getenv("CRYPTO_MAX_ORDERS_PER_RUN", "5"))
 DAILY_NOTIONAL_CAP = float(os.getenv("CRYPTO_DAILY_NOTIONAL_CAP", "300"))
 WEEKLY_NOTIONAL_CAP = float(os.getenv("CRYPTO_WEEKLY_NOTIONAL_CAP", "1500"))
-MAX_POSITIONS = int(os.getenv("CRYPTO_MAX_POSITIONS", "3"))
-PER_TRADE_PCT_CAP = float(os.getenv("CRYPTO_PER_TRADE_PCT_CAP", "0.05"))  # 5% of buying power
+MAX_POSITIONS = int(os.getenv("CRYPTO_MAX_POSITIONS", "5"))
+PER_TRADE_PCT_CAP = float(os.getenv("CRYPTO_PER_TRADE_PCT_CAP", "0.02"))  # 2% of buying power
+MAX_PER_CATEGORY = int(os.getenv("CRYPTO_MAX_PER_CATEGORY", "2"))
 _orders_this_run = 0
 
 
@@ -154,6 +156,13 @@ def place_order(symbol, qty, side, limit_price=None):
                 return {"placed": False, "reason": f"Could not verify max-position cap ({exc}) — holding rather than guessing."}
             if pos_check["blocked"]:
                 return {"placed": False, "reason": f"Max concurrent positions: {pos_check['reason']}."}
+
+            try:
+                cat_check = check_category_cap(symbol, MAX_PER_CATEGORY)
+            except Exception as exc:
+                return {"placed": False, "reason": f"Could not verify category cap ({exc}) — holding rather than guessing."}
+            if cat_check["blocked"]:
+                return {"placed": False, "reason": f"Category cap: {cat_check['reason']} ({cat_check['category']})."}
 
             try:
                 deployed = get_crypto_deployed_notional()

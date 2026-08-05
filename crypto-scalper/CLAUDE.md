@@ -345,6 +345,41 @@ lives in Claude's Routines environment, not GitHub Actions secrets. Set
 via `gh secret set RESEND_API_KEY --repo fabjon14-cmd/Jarvis-trader` and
 `gh secret set REPORT_TO_EMAIL --repo fabjon14-cmd/Jarvis-trader`.
 
+## Backtesting (added 2026-08-05)
+
+`scripts/backtest.py`, run on demand via `.github/workflows/crypto-scalper-backtest.yml`
+(`workflow_dispatch` only — not scheduled). Replays the exact live signal
+logic (RSI(14)<30 + EMA20 cross-above + EMA20>EMA50 + no ATR spike) and
+exit logic (+1.5% TP / -0.75% SL / 4h timeout) bar-by-bar over historical
+5-minute candles, with **no look-ahead**: at bar i, only `bars[0..i]` is
+used to decide anything about bar i, and exit checks for a position only
+start from the bar *after* it was entered.
+
+**Scope — read before trusting the output:**
+- Signal-only. Does NOT simulate the daily/weekly notional caps,
+  max-positions cap, category cap, or RSI-weighted cross-pair allocation —
+  those govern how much capital gets deployed, not whether an individual
+  trade wins or loses. Results are per-trade **% return**, not dollar P&L.
+- If both TP and SL are touched within the same historical bar, OHLC data
+  alone can't tell you which happened first — the backtest conservatively
+  assumes the worse outcome (stop-loss) hit first, standard practice to
+  avoid overstating results.
+- RSI/EMA/ATR are computed from a rolling last-150-bar window at each
+  step, not the full history since account inception — a standard
+  approximation given EMA's exponential decay (bars further back than
+  ~150 contribute negligibly to EMA(50) anyway), done for runtime
+  (recomputing indicators over the full growing history at every one of
+  tens of thousands of bars would be far slower).
+- The take-profit exit applies the same 0.1% limit-order slippage buffer
+  as live trading; the stop-loss exit uses the exact stop price (matching
+  live's market-order guaranteed-fill design).
+
+This answers "does the signal itself have edge" — the necessary first
+question — not "would this exact bot, with its exact budget caps, have
+made money." A budget-constrained simulation (also modeling the caps and
+allocation) would be a heavier follow-up if the signal-only result looks
+promising enough to justify it.
+
 ## Setup notes
 
 - Requires a **second, separate** Alpaca paper account — do not reuse the

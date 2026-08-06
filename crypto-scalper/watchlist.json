@@ -1,7 +1,10 @@
 {
   "pairs": [
-    "BTC/USD", "ETH/USD", "SOL/USD", "AVAX/USD", "DOT/USD",
-    "LINK/USD", "UNI/USD",
-    "DOGE/USD"
+    "BTC/USD", "ETH/USD", "SOL/USD", "DOT/USD", "LTC/USD", "XTZ/USD",
+    "LINK/USD", "UNI/USD", "AAVE/USD", "MKR/USD", "YFI/USD", "SUSHI/USD", "CRV/USD",
+    "DOGE/USD", "SHIB/USD",
+    "BCH/USD", "XRP/USD",
+    "GRT/USD",
+    "BAT/USD"
   ]
 }

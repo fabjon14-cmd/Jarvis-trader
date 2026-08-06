@@ -1,5 +1,42 @@
 # Crypto Scalper — Project Notes
 
+## ⚠ Trading live despite a negative backtest finding (2026-08-06) — read before assuming this is validated
+
+This agent was briefly paused, then **resumed the same day on the
+operator's explicit, informed instruction**, after being shown the
+finding below and confirming they wanted it running anyway on this
+paper account. This is not an oversight or a stale warning — it's a
+deliberate choice being made with the numbers in front of the operator,
+and it should stay that way: don't let a future run of this bot, or a
+future editor of this file, quietly forget why this line exists.
+
+**The finding:** a full research pass the same day (documented in detail
+under "ATR multiplier calibration" and the sections after it below)
+tested this signal — and a from-scratch trend-following alternative —
+across **8 independent, non-overlapping 60-day windows spanning 480 days
+(16 months) of real market history**. Results, averaged across all 8
+windows:
+
+| | Avg return/window | Windows profitable |
+|---|---|---|
+| Mean-reversion (this strategy, currently live) | **-22.2%** | 1 of 8 |
+| Trend-following (alternative tried, not live) | **-42.4%** | 0 of 8 |
+| BTC buy-and-hold (benchmark) | -2.25% | — |
+
+Both signal families lose money on average, both lose considerably more
+than simply holding BTC, and a market-regime classifier (efficiency
+ratio — see "Regime classification check" below) does not predict which
+one wins in a given window. This isn't a thin or ambiguous result — it's
+a large-sample, multi-window, multi-strategy finding, not a single bad
+backtest.
+
+**To pause again:** set `CRYPTO_TRADING_PAUSED: "1"` back in the `env:`
+block of `.github/workflows/crypto-scalper.yml` — the mechanism is still
+in `scalper_agent.py` (`TRADING_PAUSED`), blocks new buys only, and
+never blocks exits on an open position.
+
+---
+
 A second, independent agent from the equities Trader in the repo root — its
 own, separate Alpaca **paper-trading** (fake money) account (own API keys,
 `CRYPTO_APCA_*` env vars, own equity curve), a different strategy, a
@@ -20,8 +57,8 @@ capital.
 - `scripts/trade.py` — `order PAIR QTY SIDE [LIMIT_PRICE]`
 - `agent/scalper_agent.py` — the actual run loop: checks exits, then evaluates new-buy signals, places orders, builds a JSON decision envelope for every pair, and appends both to the day's journal. This is what gets scheduled every 5 minutes.
 - `scripts/review.py` — `write [PERIOD_DAYS] | show [PERIOD_DAYS]`, quantitative-only performance rollup (win rate, realized P&L, BTC benchmark). Scheduled weekly, separately, via `.github/workflows/crypto-scalper-review.yml`. See "Weekly review" below.
-- `watchlist.json` — crypto pairs in scope: `BTC/USD`, `ETH/USD`, `SOL/USD`, `AVAX/USD`, `DOT/USD`, `LINK/USD`, `UNI/USD`, `DOGE/USD` (expanded from the original 3 on 2026-08-05 so the category cap below has more than one category to actually enforce across). Don't trade pairs outside it without being told to.
-- `categories.json` — category per pair (`Layer1`, `DeFi`, `Meme`), backing the category cap below. Mirrors the equities bot's `sectors.json` pattern.
+- `watchlist.json` — crypto pairs in scope: 19 pairs as of 2026-08-06 (expanded from 7 — see "Watchlist expansion to 19 pairs" below). Don't trade pairs outside it without being told to.
+- `categories.json` — category per pair (`Layer1`, `DeFi`, `Meme`, `Payments`, `Infrastructure`, `Utility`), backing the category cap below. Mirrors the equities bot's `sectors.json` pattern.
 - `../scripts/notify.py` (shared with the equities bot) — email the day's journal. Call this **at most once a day** (e.g. after the last scheduled firing), not every run — this agent fires far more often than the equities bot's hourly cadence, and per-run emails would be spam.
 - `scripts/hourly_digest.py` — emails a summary of any buy/sell activity in the last hour, via the shared `notify.py`. Sends nothing if there was no activity. Scheduled hourly via `.github/workflows/crypto-scalper-hourly-digest.yml`. See "Hourly digest" below.
 
@@ -421,6 +458,236 @@ made money." A budget-constrained simulation (also modeling the caps and
 allocation) would be a heavier follow-up if the signal-only result looks
 promising enough to justify it.
 
+Also added the same day: `scripts/diagnose_signal.py` (counts how often
+each individual buy condition is true, separately, to find which one is
+the actual bottleneck when the combined signal fires rarely or never —
+not part of the permanent pipeline) and, on the aggregate backtest,
+`avg_return_by_exit_reason`, per-pair `exit_breakdown`, an `exclude_pairs`
+option (test dropping a pair without touching the live watchlist), and a
+`detail PAIR` mode (full trade-by-trade list for one pair).
+
+### AVAX/USD removed from the watchlist (2026-08-05)
+
+The 60-day backtest (after both signal fixes above) showed the full
+8-pair watchlist losing -8.37% against a +1.97-2.01% BTC buy-and-hold
+benchmark. `exclude_pairs=AVAX/USD` on the same window flipped this to
+**+4.48%** — outperforming buy-and-hold — with max drawdown roughly
+halved (-16.66% → -8.11%). AVAX/USD alone was hitting stop-loss on 72.5%
+of its trades (29/40) versus a 47% stop-loss rate across the other seven
+pairs; its actual volatility doesn't fit the fixed 0.75% stop tuned
+around the rest of the watchlist, so "good" entries kept getting shaken
+out by normal noise before the reversal could play out. Not a close
+call — one pair was solely responsible for turning a profitable result
+into a losing one. `categories.json` was updated in the same change
+(Layer1 category still has BTC/ETH/SOL/DOT, unaffected by the removal).
+If AVAX-like volatility comes up again for a different pair, the fix
+would be a per-pair stop distance, not another removal — but that's a
+larger change than was justified here for one data point.
+
+### Out-of-sample validation exposed the real problem (2026-08-06)
+
+Added `end_days_ago` to `scripts/backtest.py` to test the current config
+against a window that had no part in tuning it (e.g. `lookback_days=60,
+end_days_ago=60` tests the 60 days ending 60 days ago). Result: the
+config that scored +4.48% on the most recent 60 days lost **-23.91%** on
+the prior 60 days, underperforming BTC buy-and-hold (-11.82% that
+window) by ~12 points. The AVAX conclusion didn't generalize either — in
+this earlier window, **DOT/USD** showed the identical pattern AVAX
+showed in the other one (74% stop-loss rate, clear worst performer).
+AVAX wasn't uniquely broken; it was just whichever pair happened to be
+most volatile relative to a flat percentage stop in the window being
+looked at. Removing pairs one at a time as they show up doesn't fix
+that — a different pair takes the "worst performer" role in a different
+period.
+
+### ATR-based stop-loss/take-profit, replacing the flat percentages (2026-08-06)
+
+Fixes the actual mechanism behind both findings above:
+`research.compute_atr_based_stop_tp_pct()` sizes each trade's stop/TP off
+**that pair's own ATR(14) at entry time**, not one flat 0.75%/1.5% for
+every pair regardless of how volatile it naturally is —
+`CRYPTO_ATR_STOP_MULTIPLIER`/`CRYPTO_ATR_TP_MULTIPLIER` (currently 6x/12x
+— see "ATR multiplier calibration" below for why that number and not the
+originally-shipped 1.5x/3x, and why neither is actually validated;
+preserves the original 2:1 reward:risk ratio) control the sizing. A
+naturally choppier pair gets proportionally more room before being
+called a "stop-out"; a calmer pair gets a tighter one — so the same
+relative risk applies to whichever pair happens to be volatile in a
+given period, instead of that pair repeatedly getting shaken out by its
+own normal noise.
+
+**How this is persisted per trade:** Alpaca doesn't offer a way to
+attach custom metadata to a position, and unlike the old flat globals,
+each trade's stop/TP now genuinely differs — so `research.
+encode_trade_params()`/`decode_trade_params()` pack the entry-time
+stop/TP into the buy order's `client_order_id` (e.g. `cs-sl35-tp70` =
+0.35% stop, 0.70% target), which `trade.place_order()` passes straight
+to Alpaca. `get_exit_flags()` recovers it from the entry order on every
+run via `get_position_trade_params()`. This follows the same "Alpaca's
+own order history is the source of truth, not local state that could
+desync" principle used everywhere else in this project (duplicate-order
+protection, position entry time, etc.) — no separate state file to keep
+in sync or lose on a crash. A position with no recoverable
+`client_order_id` (opened before this feature existed, or placed
+manually/interactively without it) falls back to the flat
+`STOP_LOSS_PCT`/`PROFIT_TARGET_PCT` defaults.
+
+The backtest mirrors this exactly: at entry, it computes stop/TP from
+that bar's own ATR and stores it on the in-memory `position` dict for
+the rest of that trade's simulated life — no persistence complexity
+there since a single `simulate_pair()` call already holds everything in
+memory.
+
+### ATR multiplier calibration — read this before trusting any live result (2026-08-06)
+
+**Nothing tested this day generalized across both the recent 60-day
+window and an earlier out-of-sample 60-day window.** In order:
+
+| Config | Recent 60d | Out-of-sample 60d |
+|---|---|---|
+| Flat 0.75%/1.5%, 8 pairs | -8.37% | not tested |
+| Flat, AVAX excluded | +4.48% | -23.91% |
+| ATR 1.5x/3x (tight) | -8.02% | not tested |
+| ATR 6x/12x (wide) | +40.7% | -22.21% |
+| ATR 6x/12x + BTC daily-EMA regime filter | 0 trades (filter blocked everything) | -30.98% (filter let it all through, worse) |
+
+The regime filter (`get_market_regime()`, still in `research.py` but
+**not wired into live trading**) failed in the most telling way: it
+blocked every trade in the calm/profitable window and barely blocked
+anything in the actual decline — a daily EMA20/50 cross is too laggy in
+both directions to gate on. Five different configurations, five
+different failure modes, all following the same shape: good on whichever
+window they were tuned against, bad on the other one. That pattern is
+itself the finding — this points at the underlying RSI+EMA+ATR signal
+not having a durable statistical edge, not at any one parameter being
+miscalibrated.
+
+**6x/12x is the current live default because the operator explicitly
+chose it (2026-08-06) after this finding** — specifically as "the
+config that wasn't actively losing in the most recent backtest," to run
+live for a day of observation, NOT because it's validated. 1.5x/3x
+wasn't re-tested out-of-sample, so this isn't even a clean "6x/12x beat
+1.5x/3x" comparison. Do not read confidence into short-term live results
+under this config without re-reading this section first. If revisiting
+this strategy, the honest next step is a proper multi-window/walk-forward
+validation process — treat any single day or single 60-day backtest
+window as anecdote, not evidence, given what happened here.
+
+### Regime classification check + trend-following alternative — the real answer (2026-08-06)
+
+Following up on "the honest next step is proper multi-window validation"
+above, immediately the same day: built `simulate_pair_trend()` (a
+from-scratch, opposite-philosophy strategy — buy breakouts above the
+1-hour EMA20 with 1-hour AND daily uptrend both required, no RSI-oversold
+gate at all, wide 20x-ATR take-profit and 24h max hold instead of tight
+symmetric targets — "cut losses short, let winners run") and
+`regime_check()` (Kaufman's Efficiency Ratio: net move ÷ total path
+length — 1.0 = pure trend, 0.0 = pure chop), then ran both strategies
+plus the regime metric across **8 independent, non-overlapping 60-day
+windows spanning 480 days**, the full history available across all 7
+watchlist pairs (SOL/USD's Alpaca listing is the limiting factor — data
+doesn't go back meaningfully further than ~480 days for it, confirmed by
+checking `bars_fetched_per_pair` at increasing depth before committing
+to this window count).
+
+| end_days_ago | Efficiency Ratio | BTC net | Mean-reversion | Trend-following |
+|---|---|---|---|---|
+| 0 (most recent) | 0.036 | +2.8% | +40.7% | -36.2% |
+| 60 | 0.128 | -11.8% | -23.2% | -0.9% |
+| 120 | 0.010 | +1.1% | -61.6% | -40.3% |
+| 180 | 0.253 | -24.8% | -26.4% | -45.1% |
+| 240 | 0.165 | -16.3% | -48.7% | -70.0% |
+| 300 | 0.075 | -5.9% | -22.6% | -67.1% |
+| 360 | 0.182 | +11.9% | -26.9% | -24.5% |
+| 420 | 0.271 | +25.1% | -8.9% | -55.3% |
+
+**Averages: mean-reversion -22.2%/window (1 of 8 profitable), trend-following
+-42.4%/window (0 of 8 profitable), BTC buy-and-hold -2.25%/window.**
+
+Two conclusions, both load-bearing for the pause at the top of this file:
+
+1. **The regime hypothesis doesn't hold.** The single most choppy window
+   (ER=0.010, "should" favor mean-reversion) was mean-reversion's *worst*
+   result, not its best. No clean relationship between efficiency ratio
+   and which strategy wins — this isn't "need more data to see the
+   pattern," 8 independent windows is enough to say the naive
+   trend-vs-chop theory doesn't predict outcomes here.
+2. **Trend-following is not a fix — it's worse**, nearly 2x the average
+   loss of mean-reversion. Building an opposite-philosophy strategy from
+   scratch and testing it properly (not just tuning the existing one
+   further) was the actual test of "is there a real edge hiding in a
+   different signal shape," and the answer came back no.
+
+This is why trading is paused rather than the live config being tuned
+again: this was a large-sample (8 windows, ~1,800+ total simulated
+trades across both strategies), multi-strategy result, not a single
+lucky or unlucky backtest. Re-litigating this needs a genuinely
+different data source or strategy class — not another indicator
+combination on the same 5-minute crypto bars — and that's a
+multi-session research undertaking, not a same-day parameter search.
+`simulate_pair_trend()`, `regime_check()`, and `compute_efficiency_ratio()`
+remain in `scripts/backtest.py` for that future work.
+
+### Watchlist expansion to 19 pairs (2026-08-06)
+
+At the operator's request to widen how many pairs get scanned each run
+(the original 7-pair watchlist meant most 5-minute cycles found zero
+qualifying candidates simply from small sample size). Target was 40
+pairs; landed at 19 for two reasons documented here so a future reader
+doesn't assume 19 was an arbitrary shortfall:
+
+1. **Alpaca's actual paper-crypto lineup doesn't have 40 tradable,
+   non-stablecoin pairs to begin with.** Its crypto support has been a
+   stable, well-documented set of roughly 20-odd pairs for a while —
+   there's no deeper bench to expand into regardless of how the
+   selection is made.
+2. **Live verification against this specific account failed twice.**
+   Added `scripts/list_assets.py` and a `crypto-scalper-list-assets.yml`
+   on-demand workflow specifically to query `GET /v2/assets?asset_class=
+   crypto` and confirm the exact tradable list on this account before
+   trusting it, rather than guessing. Both `workflow_dispatch` runs sat
+   queued for ~15 minutes and were auto-cancelled by GitHub with zero
+   steps ever executing — a GitHub Actions runner-allocation stall (the
+   same platform behavior that's made today's 5-minute cron land at
+   15-45+ minute gaps instead), not a bug in the script. Given the
+   operator's "do it" instruction to proceed without further back-and-
+   forth, the list below was built from Alpaca's well-established public
+   documentation instead of a live-confirmed query.
+
+**Added (12):** LTC/USD, XTZ/USD, AAVE/USD, MKR/USD, YFI/USD, SUSHI/USD,
+CRV/USD, SHIB/USD, BCH/USD, XRP/USD, GRT/USD, BAT/USD — alongside the
+original 7 (BTC/USD, ETH/USD, SOL/USD, DOT/USD, LINK/USD, UNI/USD,
+DOGE/USD), for 19 total. `categories.json` was extended with three new
+categories to keep the sector cap meaningful across a wider set:
+`Payments` (BCH/USD, XRP/USD), `Infrastructure` (GRT/USD), `Utility`
+(BAT/USD) — DeFi and Layer1 absorbed most of the new adds since that's
+where Alpaca's actual lineup is concentrated.
+
+**Deliberately excluded:**
+- **USDC/USD, USDT/USD** — stablecoins. An RSI/EMA momentum-scalp signal
+  is meaningless against an asset pegged to $1; including them would
+  just waste scan cycles and occupy a category slot for no reason.
+- **AVAX/USD** — left out, not re-litigated. It was removed 2026-08-05
+  for blowing through the old flat 0.75% stop on its own volatility (see
+  "AVAX/USD removed from the watchlist" above). The ATR-based stop/TP
+  redesign added the next day arguably addresses the exact mechanism
+  that got AVAX removed, so this exclusion may no longer be justified —
+  but re-adding it is a separate, deliberate call this expansion didn't
+  make on its own, since it wasn't what was asked.
+
+**If a symbol here turns out not to be tradable on this account**, it
+fails closed under the existing API/data-failure rule (a failed check ⇒
+hold, log which check failed) — not a functional risk, just a wasted
+cycle for that pair until corrected. `scripts/list_assets.py` and its
+workflow remain in the repo to get the real, account-verified list once
+GitHub Actions stops stalling — worth re-running that before trusting
+this list is 100% accurate.
+
+**No other risk parameter changed.** More pairs scanned is not more risk
+exposure — `CRYPTO_MAX_POSITIONS` (5), `CRYPTO_MAX_PER_CATEGORY` (2), and
+the daily/weekly notional caps are unchanged and still bound total
+exposure regardless of watchlist size.
+
 ## Setup notes
 
 - Requires a **second, separate** Alpaca paper account — do not reuse the
@@ -438,4 +705,6 @@ promising enough to justify it.
   `CRYPTO_DAILY_NOTIONAL_CAP`, `CRYPTO_WEEKLY_NOTIONAL_CAP`,
   `CRYPTO_MAX_POSITIONS`, `CRYPTO_MAX_PER_CATEGORY`, `CRYPTO_PER_TRADE_PCT_CAP`,
   `CRYPTO_MAX_HOLD_HOURS`, `CRYPTO_PROFIT_TARGET_PCT`, `CRYPTO_STOP_LOSS_PCT`,
-  `CRYPTO_ATR_SPIKE_MULTIPLE`, `CRYPTO_TARGET_RISK_PCT`.
+  `CRYPTO_ATR_SPIKE_MULTIPLE`, `CRYPTO_TARGET_RISK_PCT`,
+  `CRYPTO_ATR_STOP_MULTIPLIER`, `CRYPTO_ATR_TP_MULTIPLIER`,
+  `CRYPTO_RSI_LOOKBACK_BARS`.

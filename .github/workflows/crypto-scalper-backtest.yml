@@ -20,6 +20,26 @@ on:
         description: "Optional: comma-separated pairs to exclude from the aggregate report (e.g. AVAX/USD) — does not touch the live watchlist"
         required: false
         default: ""
+      end_days_ago:
+        description: "Shift the window backward by this many days (e.g. 60 = test the 60 days ending 60 days ago, for out-of-sample validation against a period not used to tune the strategy)"
+        required: false
+        default: "0"
+      atr_stop_multiplier:
+        description: "Override CRYPTO_ATR_STOP_MULTIPLIER for this run only, for calibration — does not change the live/default value"
+        required: false
+        default: ""
+      atr_tp_multiplier:
+        description: "Override CRYPTO_ATR_TP_MULTIPLIER for this run only, for calibration — does not change the live/default value"
+        required: false
+        default: ""
+      use_regime_filter:
+        description: "For the default (mean-reversion) strategy: 'regime' turns the BTC daily-trend gate ON (off by default). For strategy=trend: 'noregime' turns it OFF (on by default there)."
+        required: false
+        default: ""
+      strategy:
+        description: "Set to 'trend' for the trend-following variant, or 'regime-check' to report BTC's efficiency ratio for the window instead of running a strategy"
+        required: false
+        default: ""
 
 jobs:
   backtest:
@@ -41,9 +61,15 @@ jobs:
           CRYPTO_APCA_API_KEY_ID: ${{ secrets.CRYPTO_APCA_API_KEY_ID }}
           CRYPTO_APCA_API_SECRET_KEY: ${{ secrets.CRYPTO_APCA_API_SECRET_KEY }}
           CRYPTO_APCA_BASE_URL: ${{ secrets.CRYPTO_APCA_BASE_URL }}
+          CRYPTO_ATR_STOP_MULTIPLIER: ${{ github.event.inputs.atr_stop_multiplier }}
+          CRYPTO_ATR_TP_MULTIPLIER: ${{ github.event.inputs.atr_tp_multiplier }}
         run: |
           if [ -n "${{ github.event.inputs.detail_pair }}" ]; then
             python3 crypto-scalper/scripts/backtest.py detail "${{ github.event.inputs.detail_pair }}" "${{ github.event.inputs.lookback_days || 60 }}"
+          elif [ "${{ github.event.inputs.strategy }}" = "trend" ]; then
+            python3 crypto-scalper/scripts/backtest.py trend "${{ github.event.inputs.lookback_days || 60 }}" "${{ github.event.inputs.end_days_ago || 0 }}" "${{ github.event.inputs.use_regime_filter }}"
+          elif [ "${{ github.event.inputs.strategy }}" = "regime-check" ]; then
+            python3 crypto-scalper/scripts/backtest.py regime-check "${{ github.event.inputs.lookback_days || 60 }}" "${{ github.event.inputs.end_days_ago || 0 }}"
           else
-            python3 crypto-scalper/scripts/backtest.py "${{ github.event.inputs.lookback_days || 60 }}" "${{ github.event.inputs.exclude_pairs }}"
+            python3 crypto-scalper/scripts/backtest.py "${{ github.event.inputs.lookback_days || 60 }}" "${{ github.event.inputs.exclude_pairs }}" "${{ github.event.inputs.end_days_ago || 0 }}" "${{ github.event.inputs.use_regime_filter }}"
           fi

@@ -2,9 +2,20 @@
   "BTC/USD": "Layer1",
   "ETH/USD": "Layer1",
   "SOL/USD": "Layer1",
-  "AVAX/USD": "Layer1",
   "DOT/USD": "Layer1",
+  "LTC/USD": "Layer1",
+  "XTZ/USD": "Layer1",
   "LINK/USD": "DeFi",
   "UNI/USD": "DeFi",
-  "DOGE/USD": "Meme"
+  "AAVE/USD": "DeFi",
+  "MKR/USD": "DeFi",
+  "YFI/USD": "DeFi",
+  "SUSHI/USD": "DeFi",
+  "CRV/USD": "DeFi",
+  "DOGE/USD": "Meme",
+  "SHIB/USD": "Meme",
+  "BCH/USD": "Payments",
+  "XRP/USD": "Payments",
+  "GRT/USD": "Infrastructure",
+  "BAT/USD": "Utility"
 }

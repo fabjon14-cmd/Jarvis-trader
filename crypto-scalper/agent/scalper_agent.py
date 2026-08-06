@@ -41,6 +41,15 @@ PER_TRADE_PCT_CAP = trade.PER_TRADE_PCT_CAP
 MIN_REALISTIC_NOTIONAL = float(os.getenv("CRYPTO_MIN_REALISTIC_NOTIONAL", "10"))
 LIMIT_SLIPPAGE_BUFFER = float(os.getenv("CRYPTO_LIMIT_SLIPPAGE_BUFFER", "0.001"))  # 0.1%
 
+# Operator-decided pause on NEW buys only — set 2026-08-06 after an 8-window/
+# 480-day backtest found neither the mean-reversion nor trend-following
+# variant of this signal had positive expected value (averaging -22.2% and
+# -42.4% per 60-day window respectively, both worse than simply holding
+# BTC at -2.25%). Exits (stop-loss/take-profit/timeout) are NEVER paused by
+# this — same "a mandatory exit is never blocked by a buy-side gate"
+# principle as the circuit breaker. See CLAUDE.md "Live trading paused".
+TRADING_PAUSED = os.getenv("CRYPTO_TRADING_PAUSED") == "1"
+
 
 def _load_watchlist():
     with open(WATCHLIST_PATH) as f:
@@ -63,10 +72,10 @@ def _append_journal(lines):
     return path
 
 
-def _invalidation_price(entry_price):
-    if not entry_price:
+def _invalidation_price(entry_price, stop_pct):
+    if not entry_price or stop_pct is None:
         return None
-    return round(float(entry_price) * (1 - research.STOP_LOSS_PCT / 100), 8)
+    return round(float(entry_price) * (1 - stop_pct / 100), 8)
 
 
 def run():
@@ -117,7 +126,9 @@ def run():
         headroom = 0
 
     buy_block_reason = None
-    if cb.get("halted"):
+    if TRADING_PAUSED:
+        buy_block_reason = "new-buy trading paused by operator decision (2026-08-06) pending strategy review — see CLAUDE.md 'Live trading paused'"
+    elif cb.get("halted"):
         buy_block_reason = f"circuit breaker halted: {'; '.join(cb.get('reasons', []))}"
     elif headroom < MIN_REALISTIC_NOTIONAL:
         buy_block_reason = f"daily/weekly headroom ${headroom:,.2f} below ${MIN_REALISTIC_NOTIONAL:.0f} realistic-trade floor"
@@ -147,13 +158,17 @@ def run():
 
         if held_position:
             avg_entry = held_position.get("avg_entry_price")
-            row["invalidation_price"] = _invalidation_price(avg_entry)
+            try:
+                held_stop_pct, held_tp_pct = research.get_position_trade_params(pair)
+            except Exception:
+                held_stop_pct, held_tp_pct = None, None
+            row["invalidation_price"] = _invalidation_price(avg_entry, held_stop_pct)
             flag = exit_flags_by_symbol.get(pair)
 
             if not flag:
                 plpc = float(held_position.get("unrealized_plpc", 0)) * 100
                 row["action"] = "HOLD"
-                row["reason"] = f"holding, unrealized {plpc:.2f}%, no exit trigger"
+                row["reason"] = f"holding, unrealized {plpc:.2f}% (stop {-held_stop_pct if held_stop_pct is not None else '?'}%/target +{held_tp_pct}%), no exit trigger"
                 row["log_line"] = f"- {pair}: {row['reason']}."
             else:
                 try:
@@ -264,18 +279,34 @@ def run():
             continue
 
         limit_price = round(signal["curr_close"] * (1 + LIMIT_SLIPPAGE_BUFFER), 8)
+
+        # ATR-based stop/TP for THIS trade, not the flat global default —
+        # changed 2026-08-06 after an out-of-sample backtest showed the
+        # flat 0.75%/1.5% design blowing up on whichever pair happened to
+        # be most volatile in a given window (AVAX in one, DOT in another).
+        # See research.compute_atr_based_stop_tp_pct's docstring. Falls
+        # back to the flat defaults if ATR is unavailable for some reason.
+        stop_pct, tp_pct = research.compute_atr_based_stop_tp_pct(limit_price, signal.get("atr14"))
+        if stop_pct is None or tp_pct is None:
+            stop_pct, tp_pct = research.STOP_LOSS_PCT, research.PROFIT_TARGET_PCT
+        client_order_id = research.encode_trade_params(stop_pct, tp_pct)
+
         qty_from_caps = notional_cap / limit_price
         # Risk-based sizing is informational/a ceiling, not the operative
-        # cap — min() with the existing notional caps below. With the
-        # current 0.75% stop, a 1% risk target implies a much larger
-        # position than the notional caps allow, so in practice the caps
-        # bind; both target and actual risk % are logged so that's
-        # visible rather than silently overridden. See CLAUDE.md.
-        risk_based_qty = research.compute_risk_based_qty(equity, limit_price, research.STOP_LOSS_PCT, research.TARGET_RISK_PCT)
+        # cap — min() with the existing notional caps below. Sized against
+        # THIS trade's own ATR-based stop, not the flat global one, so the
+        # risk-sizing math matches whatever stop actually gets set. With a
+        # tight stop this can still imply a much larger position than the
+        # notional caps allow, so in practice the caps usually bind; both
+        # target and actual risk % are logged so that's visible rather
+        # than silently overridden. See CLAUDE.md.
+        risk_based_qty = research.compute_risk_based_qty(equity, limit_price, stop_pct, research.TARGET_RISK_PCT)
         qty = round(min(qty_from_caps, risk_based_qty) if risk_based_qty > 0 else qty_from_caps, 6)
         notional = qty * limit_price
-        actual_risk_dollar = round(qty * limit_price * (research.STOP_LOSS_PCT / 100), 2)
+        actual_risk_dollar = round(qty * limit_price * (stop_pct / 100), 2)
         risk_sizing = {
+            "stop_pct": stop_pct,
+            "tp_pct": tp_pct,
             "target_risk_pct": research.TARGET_RISK_PCT,
             "target_risk_dollar": round(research.TARGET_RISK_PCT / 100 * equity, 2) if equity else None,
             "risk_based_qty": round(risk_based_qty, 6) if risk_based_qty else None,
@@ -285,14 +316,15 @@ def run():
             "actual_risk_dollar": actual_risk_dollar,
             "actual_risk_pct": round(actual_risk_dollar / equity * 100, 4) if equity else None,
         }
-        result = trade.place_order(pair, qty, "buy", limit_price)
+        result = trade.place_order(pair, qty, "buy", limit_price, client_order_id=client_order_id)
         row["action"] = "NEW_TRADE"
-        row["invalidation_price"] = _invalidation_price(limit_price)
+        row["invalidation_price"] = _invalidation_price(limit_price, stop_pct)
         row["risk_sizing"] = risk_sizing
         row["reason"] = (
             f"rsi={signal['rsi']} (touched {signal['rsi_min_in_lookback']} within last {research.RSI_LOOKBACK_BARS} bars), "
             f"crossed above EMA20, EMA20>EMA50 (1h), no ATR spike — "
-            f"order {qty} @ limit ${limit_price} (${notional:,.2f}, RSI-weighted share {weights[idx] / total_weight * 100:.0f}% "
+            f"order {qty} @ limit ${limit_price} (${notional:,.2f}, ATR-based stop -{stop_pct}%/target +{tp_pct}%, "
+            f"RSI-weighted share {weights[idx] / total_weight * 100:.0f}% "
             f"across {len(candidates)} qualifying pair(s), actual risk {risk_sizing['actual_risk_pct']}% vs {research.TARGET_RISK_PCT}% target): {json.dumps(result)}"
         )
         row["log_line"] = f"- {pair}: BUY — {row['reason']}"

@@ -6,6 +6,14 @@ name: Crypto Scalper
 # requested 1-minute cadence). See crypto-scalper/CLAUDE.md for the strategy
 # and risk controls this runs under. workflow_dispatch allows a manual
 # one-off run for testing.
+#
+# RESUMED 2026-08-06 on the operator's explicit instruction, despite an
+# 8-window/480-day backtest finding this exact config averaged -22.2% per
+# 60-day window (1 of 8 profitable) — see CLAUDE.md "Live trading paused"
+# for the full findings; the operator confirmed running anyway, knowingly,
+# on a paper account. Was briefly paused (CRYPTO_TRADING_PAUSED=1) earlier
+# the same day; that mechanism is still in scalper_agent.py if pausing
+# again is ever wanted.
 on:
   schedule:
     - cron: "*/5 * * * *"

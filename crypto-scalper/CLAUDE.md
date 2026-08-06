@@ -20,7 +20,7 @@ capital.
 - `scripts/trade.py` — `order PAIR QTY SIDE [LIMIT_PRICE]`
 - `agent/scalper_agent.py` — the actual run loop: checks exits, then evaluates new-buy signals, places orders, builds a JSON decision envelope for every pair, and appends both to the day's journal. This is what gets scheduled every 5 minutes.
 - `scripts/review.py` — `write [PERIOD_DAYS] | show [PERIOD_DAYS]`, quantitative-only performance rollup (win rate, realized P&L, BTC benchmark). Scheduled weekly, separately, via `.github/workflows/crypto-scalper-review.yml`. See "Weekly review" below.
-- `watchlist.json` — crypto pairs in scope: `BTC/USD`, `ETH/USD`, `SOL/USD`, `AVAX/USD`, `DOT/USD`, `LINK/USD`, `UNI/USD`, `DOGE/USD` (expanded from the original 3 on 2026-08-05 so the category cap below has more than one category to actually enforce across). Don't trade pairs outside it without being told to.
+- `watchlist.json` — crypto pairs in scope: `BTC/USD`, `ETH/USD`, `SOL/USD`, `DOT/USD`, `LINK/USD`, `UNI/USD`, `DOGE/USD` (expanded from the original 3 to 8 on 2026-08-05 so the category cap below has more than one category to actually enforce across; `AVAX/USD` was removed the same day — see "Backtesting" below). Don't trade pairs outside it without being told to.
 - `categories.json` — category per pair (`Layer1`, `DeFi`, `Meme`), backing the category cap below. Mirrors the equities bot's `sectors.json` pattern.
 - `../scripts/notify.py` (shared with the equities bot) — email the day's journal. Call this **at most once a day** (e.g. after the last scheduled firing), not every run — this agent fires far more often than the equities bot's hourly cadence, and per-run emails would be spam.
 - `scripts/hourly_digest.py` — emails a summary of any buy/sell activity in the last hour, via the shared `notify.py`. Sends nothing if there was no activity. Scheduled hourly via `.github/workflows/crypto-scalper-hourly-digest.yml`. See "Hourly digest" below.
@@ -420,6 +420,32 @@ question — not "would this exact bot, with its exact budget caps, have
 made money." A budget-constrained simulation (also modeling the caps and
 allocation) would be a heavier follow-up if the signal-only result looks
 promising enough to justify it.
+
+Also added the same day: `scripts/diagnose_signal.py` (counts how often
+each individual buy condition is true, separately, to find which one is
+the actual bottleneck when the combined signal fires rarely or never —
+not part of the permanent pipeline) and, on the aggregate backtest,
+`avg_return_by_exit_reason`, per-pair `exit_breakdown`, an `exclude_pairs`
+option (test dropping a pair without touching the live watchlist), and a
+`detail PAIR` mode (full trade-by-trade list for one pair).
+
+### AVAX/USD removed from the watchlist (2026-08-05)
+
+The 60-day backtest (after both signal fixes above) showed the full
+8-pair watchlist losing -8.37% against a +1.97-2.01% BTC buy-and-hold
+benchmark. `exclude_pairs=AVAX/USD` on the same window flipped this to
+**+4.48%** — outperforming buy-and-hold — with max drawdown roughly
+halved (-16.66% → -8.11%). AVAX/USD alone was hitting stop-loss on 72.5%
+of its trades (29/40) versus a 47% stop-loss rate across the other seven
+pairs; its actual volatility doesn't fit the fixed 0.75% stop tuned
+around the rest of the watchlist, so "good" entries kept getting shaken
+out by normal noise before the reversal could play out. Not a close
+call — one pair was solely responsible for turning a profitable result
+into a losing one. `categories.json` was updated in the same change
+(Layer1 category still has BTC/ETH/SOL/DOT, unaffected by the removal).
+If AVAX-like volatility comes up again for a different pair, the fix
+would be a per-pair stop distance, not another removal — but that's a
+larger change than was justified here for one data point.
 
 ## Setup notes
 

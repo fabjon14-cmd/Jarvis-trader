@@ -57,8 +57,8 @@ capital.
 - `scripts/trade.py` — `order PAIR QTY SIDE [LIMIT_PRICE]`
 - `agent/scalper_agent.py` — the actual run loop: checks exits, then evaluates new-buy signals, places orders, builds a JSON decision envelope for every pair, and appends both to the day's journal. This is what gets scheduled every 5 minutes.
 - `scripts/review.py` — `write [PERIOD_DAYS] | show [PERIOD_DAYS]`, quantitative-only performance rollup (win rate, realized P&L, BTC benchmark). Scheduled weekly, separately, via `.github/workflows/crypto-scalper-review.yml`. See "Weekly review" below.
-- `watchlist.json` — crypto pairs in scope: `BTC/USD`, `ETH/USD`, `SOL/USD`, `DOT/USD`, `LINK/USD`, `UNI/USD`, `DOGE/USD` (expanded from the original 3 to 8 on 2026-08-05 so the category cap below has more than one category to actually enforce across; `AVAX/USD` was removed the same day — see "Backtesting" below). Don't trade pairs outside it without being told to.
-- `categories.json` — category per pair (`Layer1`, `DeFi`, `Meme`), backing the category cap below. Mirrors the equities bot's `sectors.json` pattern.
+- `watchlist.json` — crypto pairs in scope: 19 pairs as of 2026-08-06 (expanded from 7 — see "Watchlist expansion to 19 pairs" below). Don't trade pairs outside it without being told to.
+- `categories.json` — category per pair (`Layer1`, `DeFi`, `Meme`, `Payments`, `Infrastructure`, `Utility`), backing the category cap below. Mirrors the equities bot's `sectors.json` pattern.
 - `../scripts/notify.py` (shared with the equities bot) — email the day's journal. Call this **at most once a day** (e.g. after the last scheduled firing), not every run — this agent fires far more often than the equities bot's hourly cadence, and per-run emails would be spam.
 - `scripts/hourly_digest.py` — emails a summary of any buy/sell activity in the last hour, via the shared `notify.py`. Sends nothing if there was no activity. Scheduled hourly via `.github/workflows/crypto-scalper-hourly-digest.yml`. See "Hourly digest" below.
 
@@ -627,6 +627,66 @@ combination on the same 5-minute crypto bars — and that's a
 multi-session research undertaking, not a same-day parameter search.
 `simulate_pair_trend()`, `regime_check()`, and `compute_efficiency_ratio()`
 remain in `scripts/backtest.py` for that future work.
+
+### Watchlist expansion to 19 pairs (2026-08-06)
+
+At the operator's request to widen how many pairs get scanned each run
+(the original 7-pair watchlist meant most 5-minute cycles found zero
+qualifying candidates simply from small sample size). Target was 40
+pairs; landed at 19 for two reasons documented here so a future reader
+doesn't assume 19 was an arbitrary shortfall:
+
+1. **Alpaca's actual paper-crypto lineup doesn't have 40 tradable,
+   non-stablecoin pairs to begin with.** Its crypto support has been a
+   stable, well-documented set of roughly 20-odd pairs for a while —
+   there's no deeper bench to expand into regardless of how the
+   selection is made.
+2. **Live verification against this specific account failed twice.**
+   Added `scripts/list_assets.py` and a `crypto-scalper-list-assets.yml`
+   on-demand workflow specifically to query `GET /v2/assets?asset_class=
+   crypto` and confirm the exact tradable list on this account before
+   trusting it, rather than guessing. Both `workflow_dispatch` runs sat
+   queued for ~15 minutes and were auto-cancelled by GitHub with zero
+   steps ever executing — a GitHub Actions runner-allocation stall (the
+   same platform behavior that's made today's 5-minute cron land at
+   15-45+ minute gaps instead), not a bug in the script. Given the
+   operator's "do it" instruction to proceed without further back-and-
+   forth, the list below was built from Alpaca's well-established public
+   documentation instead of a live-confirmed query.
+
+**Added (12):** LTC/USD, XTZ/USD, AAVE/USD, MKR/USD, YFI/USD, SUSHI/USD,
+CRV/USD, SHIB/USD, BCH/USD, XRP/USD, GRT/USD, BAT/USD — alongside the
+original 7 (BTC/USD, ETH/USD, SOL/USD, DOT/USD, LINK/USD, UNI/USD,
+DOGE/USD), for 19 total. `categories.json` was extended with three new
+categories to keep the sector cap meaningful across a wider set:
+`Payments` (BCH/USD, XRP/USD), `Infrastructure` (GRT/USD), `Utility`
+(BAT/USD) — DeFi and Layer1 absorbed most of the new adds since that's
+where Alpaca's actual lineup is concentrated.
+
+**Deliberately excluded:**
+- **USDC/USD, USDT/USD** — stablecoins. An RSI/EMA momentum-scalp signal
+  is meaningless against an asset pegged to $1; including them would
+  just waste scan cycles and occupy a category slot for no reason.
+- **AVAX/USD** — left out, not re-litigated. It was removed 2026-08-05
+  for blowing through the old flat 0.75% stop on its own volatility (see
+  "AVAX/USD removed from the watchlist" above). The ATR-based stop/TP
+  redesign added the next day arguably addresses the exact mechanism
+  that got AVAX removed, so this exclusion may no longer be justified —
+  but re-adding it is a separate, deliberate call this expansion didn't
+  make on its own, since it wasn't what was asked.
+
+**If a symbol here turns out not to be tradable on this account**, it
+fails closed under the existing API/data-failure rule (a failed check ⇒
+hold, log which check failed) — not a functional risk, just a wasted
+cycle for that pair until corrected. `scripts/list_assets.py` and its
+workflow remain in the repo to get the real, account-verified list once
+GitHub Actions stops stalling — worth re-running that before trusting
+this list is 100% accurate.
+
+**No other risk parameter changed.** More pairs scanned is not more risk
+exposure — `CRYPTO_MAX_POSITIONS` (5), `CRYPTO_MAX_PER_CATEGORY` (2), and
+the daily/weekly notional caps are unchanged and still bound total
+exposure regardless of watchlist size.
 
 ## Setup notes
 

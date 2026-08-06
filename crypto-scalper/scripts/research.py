@@ -33,8 +33,11 @@ PROFIT_TARGET_PCT = float(os.getenv("CRYPTO_PROFIT_TARGET_PCT", "1.5"))
 STOP_LOSS_PCT = float(os.getenv("CRYPTO_STOP_LOSS_PCT", "0.75"))
 MAX_HOLD_HOURS = float(os.getenv("CRYPTO_MAX_HOLD_HOURS", "4"))
 TARGET_RISK_PCT = float(os.getenv("CRYPTO_TARGET_RISK_PCT", "1.0"))
-ATR_STOP_MULTIPLIER = float(os.getenv("CRYPTO_ATR_STOP_MULTIPLIER", "1.5"))
-ATR_TP_MULTIPLIER = float(os.getenv("CRYPTO_ATR_TP_MULTIPLIER", "3.0"))
+# `or` (not a plain default=) so an env var explicitly set to an empty
+# string — e.g. an unfilled optional GitHub Actions workflow input — falls
+# back to the default too, instead of crashing float("").
+ATR_STOP_MULTIPLIER = float(os.getenv("CRYPTO_ATR_STOP_MULTIPLIER") or "1.5")
+ATR_TP_MULTIPLIER = float(os.getenv("CRYPTO_ATR_TP_MULTIPLIER") or "3.0")
 
 
 def _headers():

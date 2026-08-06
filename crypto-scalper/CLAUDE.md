@@ -469,8 +469,10 @@ Fixes the actual mechanism behind both findings above:
 `research.compute_atr_based_stop_tp_pct()` sizes each trade's stop/TP off
 **that pair's own ATR(14) at entry time**, not one flat 0.75%/1.5% for
 every pair regardless of how volatile it naturally is —
-`CRYPTO_ATR_STOP_MULTIPLIER`/`CRYPTO_ATR_TP_MULTIPLIER` (default 1.5x/3x,
-preserving the original 2:1 reward:risk ratio) control the sizing. A
+`CRYPTO_ATR_STOP_MULTIPLIER`/`CRYPTO_ATR_TP_MULTIPLIER` (currently 6x/12x
+— see "ATR multiplier calibration" below for why that number and not the
+originally-shipped 1.5x/3x, and why neither is actually validated;
+preserves the original 2:1 reward:risk ratio) control the sizing. A
 naturally choppier pair gets proportionally more room before being
 called a "stop-out"; a calmer pair gets a tighter one — so the same
 relative risk applies to whichever pair happens to be volatile in a
@@ -497,9 +499,42 @@ The backtest mirrors this exactly: at entry, it computes stop/TP from
 that bar's own ATR and stores it on the in-memory `position` dict for
 the rest of that trade's simulated life — no persistence complexity
 there since a single `simulate_pair()` call already holds everything in
-memory. Re-validate with both the recent and out-of-sample backtest
-windows after this change before trusting it further — a fix motivated
-by two failures should be checked against both, not just declared done.
+memory.
+
+### ATR multiplier calibration — read this before trusting any live result (2026-08-06)
+
+**Nothing tested this day generalized across both the recent 60-day
+window and an earlier out-of-sample 60-day window.** In order:
+
+| Config | Recent 60d | Out-of-sample 60d |
+|---|---|---|
+| Flat 0.75%/1.5%, 8 pairs | -8.37% | not tested |
+| Flat, AVAX excluded | +4.48% | -23.91% |
+| ATR 1.5x/3x (tight) | -8.02% | not tested |
+| ATR 6x/12x (wide) | +40.7% | -22.21% |
+| ATR 6x/12x + BTC daily-EMA regime filter | 0 trades (filter blocked everything) | -30.98% (filter let it all through, worse) |
+
+The regime filter (`get_market_regime()`, still in `research.py` but
+**not wired into live trading**) failed in the most telling way: it
+blocked every trade in the calm/profitable window and barely blocked
+anything in the actual decline — a daily EMA20/50 cross is too laggy in
+both directions to gate on. Five different configurations, five
+different failure modes, all following the same shape: good on whichever
+window they were tuned against, bad on the other one. That pattern is
+itself the finding — this points at the underlying RSI+EMA+ATR signal
+not having a durable statistical edge, not at any one parameter being
+miscalibrated.
+
+**6x/12x is the current live default because the operator explicitly
+chose it (2026-08-06) after this finding** — specifically as "the
+config that wasn't actively losing in the most recent backtest," to run
+live for a day of observation, NOT because it's validated. 1.5x/3x
+wasn't re-tested out-of-sample, so this isn't even a clean "6x/12x beat
+1.5x/3x" comparison. Do not read confidence into short-term live results
+under this config without re-reading this section first. If revisiting
+this strategy, the honest next step is a proper multi-window/walk-forward
+validation process — treat any single day or single 60-day backtest
+window as anecdote, not evidence, given what happened here.
 
 ## Setup notes
 

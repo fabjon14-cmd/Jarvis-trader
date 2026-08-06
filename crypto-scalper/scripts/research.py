@@ -36,8 +36,19 @@ TARGET_RISK_PCT = float(os.getenv("CRYPTO_TARGET_RISK_PCT", "1.0"))
 # `or` (not a plain default=) so an env var explicitly set to an empty
 # string — e.g. an unfilled optional GitHub Actions workflow input — falls
 # back to the default too, instead of crashing float("").
-ATR_STOP_MULTIPLIER = float(os.getenv("CRYPTO_ATR_STOP_MULTIPLIER") or "1.5")
-ATR_TP_MULTIPLIER = float(os.getenv("CRYPTO_ATR_TP_MULTIPLIER") or "3.0")
+#
+# 6x/12x, NOT the original 1.5x/3x — changed 2026-08-06, operator's
+# explicit choice, NOT a validated result. Backtested: 1.5x/3x scored
+# -8.02% on the recent 60-day window; 6x/12x scored +40.7% on that same
+# window but -22.21% on an earlier out-of-sample one (1.5x/3x wasn't
+# re-tested out-of-sample, but every configuration tried that day failed
+# out-of-sample somehow). Neither multiplier is proven — this is "the one
+# that wasn't actively losing in the most recent backtest," picked to run
+# live for a day of observation, not a calibrated result. See
+# crypto-scalper/CLAUDE.md "ATR multiplier calibration" for the full
+# picture before reading anything into short-term live performance here.
+ATR_STOP_MULTIPLIER = float(os.getenv("CRYPTO_ATR_STOP_MULTIPLIER") or "6.0")
+ATR_TP_MULTIPLIER = float(os.getenv("CRYPTO_ATR_TP_MULTIPLIER") or "12.0")
 
 
 def _headers():

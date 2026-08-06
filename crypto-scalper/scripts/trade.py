@@ -111,7 +111,7 @@ def confirm(prompt):
     return reply in ("y", "yes")
 
 
-def place_order(symbol, qty, side, limit_price=None, market=False):
+def place_order(symbol, qty, side, limit_price=None, market=False, client_order_id=None):
     """Place a buy or sell order for a crypto pair (e.g. "BTC/USD"). No
     leverage/margin — this trades cash buying power only, same as any other
     order on this account; nothing here requests margin.
@@ -124,7 +124,13 @@ def place_order(symbol, qty, side, limit_price=None, market=False):
     guarantees the exit executes. `limit_price` is still required even when
     market=True — it's used as the reference price for the notional-cap
     check and duplicate-order dedup, just not sent as the actual order's
-    price (Alpaca fills a market order at whatever the market price is)."""
+    price (Alpaca fills a market order at whatever the market price is).
+
+    `client_order_id`, when given, is passed straight through to Alpaca and
+    is how this trade's ATR-based stop/TP get recovered on a later run —
+    see research.encode_trade_params()/decode_trade_params(). Only set for
+    buy orders; exits don't need it since they're closing, not opening, a
+    position's risk parameters."""
     global _orders_this_run
 
     if UNATTENDED:
@@ -244,6 +250,8 @@ def place_order(symbol, qty, side, limit_price=None, market=False):
     }
     if limit_price and not market:
         order_data["limit_price"] = str(limit_price)
+    if client_order_id:
+        order_data["client_order_id"] = client_order_id
 
     url = f"{BASE_URL}/v2/orders"
     response = requests.post(url, headers=headers, json=order_data, timeout=REQUEST_TIMEOUT)

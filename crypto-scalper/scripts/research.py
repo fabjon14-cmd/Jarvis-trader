@@ -9,6 +9,7 @@
 # account's credentials.
 
 import os
+import re
 import sys
 import json
 from datetime import datetime, timedelta, timezone
@@ -23,10 +24,17 @@ ALPACA_SECRET = os.getenv("CRYPTO_APCA_API_SECRET_KEY")
 BASE_URL = os.getenv("CRYPTO_APCA_BASE_URL", "https://paper-api.alpaca.markets")
 REQUEST_TIMEOUT = 15
 
+# Fallback TP/SL when a position's ATR-based params can't be recovered
+# (see compute_atr_based_stop_tp_pct below for the operative sizing) — a
+# position opened before this feature existed, or an order placed some
+# other way without our client_order_id encoding, falls back to these
+# flat defaults rather than erroring or guessing.
 PROFIT_TARGET_PCT = float(os.getenv("CRYPTO_PROFIT_TARGET_PCT", "1.5"))
 STOP_LOSS_PCT = float(os.getenv("CRYPTO_STOP_LOSS_PCT", "0.75"))
 MAX_HOLD_HOURS = float(os.getenv("CRYPTO_MAX_HOLD_HOURS", "4"))
 TARGET_RISK_PCT = float(os.getenv("CRYPTO_TARGET_RISK_PCT", "1.0"))
+ATR_STOP_MULTIPLIER = float(os.getenv("CRYPTO_ATR_STOP_MULTIPLIER", "1.5"))
+ATR_TP_MULTIPLIER = float(os.getenv("CRYPTO_ATR_TP_MULTIPLIER", "3.0"))
 
 
 def _headers():
@@ -328,6 +336,56 @@ def get_signal(pair, timeframe="5Min", limit=80):
     }
 
 
+def compute_atr_based_stop_tp_pct(entry_price, atr14):
+    """Stop-loss/take-profit as a % of entry price, sized off THIS pair's
+    own ATR(14) at entry time rather than one flat percentage for every
+    pair (changed 2026-08-06). An out-of-sample backtest found the flat
+    0.75%/1.5% design didn't fail because of any one specific pair — AVAX
+    was the worst performer in one 60-day window, but DOT was equally bad
+    (74% stop-loss rate) in a different window. The pattern rotates with
+    whichever pair happens to be most volatile relative to a fixed
+    percentage stop in the period being tested; removing pairs one at a
+    time doesn't fix that. Scaling the stop to each pair's own current
+    volatility does: a naturally choppier pair gets proportionally more
+    room, a calmer one gets a tighter stop, so the SAME relative risk
+    applies regardless of which pair happens to be volatile right now.
+    `CRYPTO_ATR_STOP_MULTIPLIER`/`CRYPTO_ATR_TP_MULTIPLIER` (default 1.5x/
+    3x, preserving the original 2:1 reward:risk ratio) are tunable via env
+    var. Returns (None, None) if atr14 or entry_price is missing/zero.
+    """
+    if not entry_price or not atr14 or entry_price <= 0:
+        return None, None
+    stop_pct = round(ATR_STOP_MULTIPLIER * atr14 / entry_price * 100, 4)
+    tp_pct = round(ATR_TP_MULTIPLIER * atr14 / entry_price * 100, 4)
+    return stop_pct, tp_pct
+
+
+def encode_trade_params(stop_pct, tp_pct):
+    """Packs this trade's entry-time ATR-based stop/TP into a
+    client_order_id string. Alpaca doesn't otherwise let us attach custom
+    metadata to a position, and per-trade parameters (unlike the old flat
+    globals) can't just be read back from a constant — this is the only
+    way to recover "what was THIS trade's stop/TP" on a later run without
+    a separate local state file that could desync from Alpaca's own
+    records (same "Alpaca's own history is the source of truth" principle
+    used everywhere else in this project). Encoded as integer basis-
+    points-ish (2 decimal places of %) to keep it short and alphanumeric."""
+    return f"cs-sl{int(round(stop_pct * 100))}-tp{int(round(tp_pct * 100))}"
+
+
+def decode_trade_params(client_order_id):
+    """Inverse of encode_trade_params(). Returns (stop_pct, tp_pct), or
+    (None, None) if the id is missing/malformed — e.g. a position opened
+    before this feature existed. Callers fall back to the flat
+    STOP_LOSS_PCT/PROFIT_TARGET_PCT defaults in that case."""
+    if not client_order_id:
+        return None, None
+    m = re.match(r"^cs-sl(-?\d+)-tp(-?\d+)$", client_order_id)
+    if not m:
+        return None, None
+    return int(m.group(1)) / 100, int(m.group(2)) / 100
+
+
 def compute_risk_based_qty(equity, entry_price, stop_loss_pct, target_risk_pct):
     """Quantity such that (entry_price - stop_price) * qty == target_risk_pct
     of equity, where stop_price = entry_price * (1 - stop_loss_pct/100) —
@@ -383,37 +441,66 @@ def get_crypto_deployed_notional():
     return {"daily_deployed": round(daily_total, 2), "weekly_deployed": round(weekly_total, 2)}
 
 
-def get_position_entry_time(symbol):
-    """Timestamp of the most recent filled buy for `symbol` — under the
-    single-entry-per-pair rule this is the entry time for whatever position
-    is currently open, used for the max-hold-time safeguard."""
+def get_position_entry_order(symbol):
+    """Most recent filled buy order for `symbol` — under the single-entry-
+    per-pair rule this is the entry order for whatever position is
+    currently open. Returns the full order dict so callers can pull
+    filled_at (max-hold-time) or client_order_id (ATR-based stop/TP) as
+    needed, rather than each maintaining its own separate lookup."""
     for o in get_orders(status="closed", limit=200):
         if o.get("symbol") != symbol or o.get("side") != "buy":
             continue
         if o.get("status") != "filled":
             continue
-        ts = o.get("filled_at") or o.get("submitted_at")
-        if ts:
-            return ts
+        return o
     return None
+
+
+def get_position_entry_time(symbol):
+    """Timestamp of the most recent filled buy for `symbol` — under the
+    single-entry-per-pair rule this is the entry time for whatever position
+    is currently open, used for the max-hold-time safeguard."""
+    order = get_position_entry_order(symbol)
+    if not order:
+        return None
+    return order.get("filled_at") or order.get("submitted_at")
+
+
+def get_position_trade_params(symbol, entry_order=None):
+    """(stop_pct, tp_pct) for the currently open position in `symbol`,
+    recovered from the entry order's client_order_id if it was placed with
+    ATR-based sizing, else the flat STOP_LOSS_PCT/PROFIT_TARGET_PCT
+    defaults (a position opened before this feature existed, or via a
+    manual/interactive order without the encoding)."""
+    if entry_order is None:
+        entry_order = get_position_entry_order(symbol)
+    stop_pct, tp_pct = decode_trade_params(entry_order.get("client_order_id") if entry_order else None)
+    if stop_pct is None or tp_pct is None:
+        return STOP_LOSS_PCT, PROFIT_TARGET_PCT
+    return stop_pct, tp_pct
 
 
 def get_exit_flags():
     """Per-position exit check for open crypto positions: profit target,
     stop loss, and max-hold-time, evaluated in that priority order. Mirrors
     the equities per-position stop-loss in spirit (mechanical, fires on
-    price/time alone) but with this strategy's own thresholds."""
+    price/time alone) but with this strategy's own thresholds — sized per
+    trade off that trade's own entry-time ATR, not one flat percentage for
+    every position (see compute_atr_based_stop_tp_pct)."""
     flags = []
     for p in get_crypto_positions():
         symbol = p.get("symbol")
         plpc = float(p.get("unrealized_plpc", 0)) * 100
+        entry_order = get_position_entry_order(symbol)
+        stop_pct, tp_pct = get_position_trade_params(symbol, entry_order=entry_order)
+
         action, reason = None, None
-        if plpc >= PROFIT_TARGET_PCT:
-            action, reason = "close_profit_target", f"unrealized {plpc:.2f}% >= +{PROFIT_TARGET_PCT}% target"
-        elif plpc <= -STOP_LOSS_PCT:
-            action, reason = "close_stop_loss", f"unrealized {plpc:.2f}% <= -{STOP_LOSS_PCT}% stop"
+        if plpc >= tp_pct:
+            action, reason = "close_profit_target", f"unrealized {plpc:.2f}% >= +{tp_pct}% target"
+        elif plpc <= -stop_pct:
+            action, reason = "close_stop_loss", f"unrealized {plpc:.2f}% <= -{stop_pct}% stop"
         else:
-            entry_ts = get_position_entry_time(symbol)
+            entry_ts = entry_order.get("filled_at") or entry_order.get("submitted_at") if entry_order else None
             if entry_ts:
                 try:
                     entry_dt = datetime.strptime(entry_ts[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
@@ -429,6 +516,8 @@ def get_exit_flags():
                 "unrealized_plpc": round(plpc, 2),
                 "action": action,
                 "reason": reason,
+                "stop_pct": stop_pct,
+                "tp_pct": tp_pct,
             })
     return flags
 

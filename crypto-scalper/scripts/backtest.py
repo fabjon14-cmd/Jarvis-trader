@@ -175,6 +175,8 @@ def simulate_pair(pair, bars, hour_bars):
                 "exit_time": bar["t"],
                 "entry_price": position["entry_price"],
                 "exit_price": exit_price,
+                "stop_pct": position.get("stop_pct"),
+                "tp_pct": position.get("tp_pct"),
                 "pnl_pct": round(pnl_pct, 4),
                 "exit_reason": exit_reason,
                 "bars_held": bars_held,
@@ -210,11 +212,19 @@ def simulate_pair(pair, bars, hour_bars):
 
         if rsi_recently_oversold and crossed_above and ema_alignment_bullish and not atr_volatility_spike:
             entry_price = curr_close * (1 + LIMIT_SLIPPAGE_BUFFER)
+            # ATR-based stop/TP, fixed at entry — sized off THIS pair's own
+            # volatility at this point in history, same as live. Falls back
+            # to the flat defaults only if ATR is somehow unavailable.
+            stop_pct, tp_pct = research.compute_atr_based_stop_tp_pct(entry_price, atr_series[-1])
+            if stop_pct is None or tp_pct is None:
+                stop_pct, tp_pct = research.STOP_LOSS_PCT, research.PROFIT_TARGET_PCT
             position = {
                 "entry_idx": i,
                 "entry_price": entry_price,
-                "tp_price": entry_price * (1 + research.PROFIT_TARGET_PCT / 100),
-                "sl_price": entry_price * (1 - research.STOP_LOSS_PCT / 100),
+                "stop_pct": stop_pct,
+                "tp_pct": tp_pct,
+                "tp_price": entry_price * (1 + tp_pct / 100),
+                "sl_price": entry_price * (1 - stop_pct / 100),
             }
 
     return trades

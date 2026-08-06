@@ -447,6 +447,60 @@ If AVAX-like volatility comes up again for a different pair, the fix
 would be a per-pair stop distance, not another removal — but that's a
 larger change than was justified here for one data point.
 
+### Out-of-sample validation exposed the real problem (2026-08-06)
+
+Added `end_days_ago` to `scripts/backtest.py` to test the current config
+against a window that had no part in tuning it (e.g. `lookback_days=60,
+end_days_ago=60` tests the 60 days ending 60 days ago). Result: the
+config that scored +4.48% on the most recent 60 days lost **-23.91%** on
+the prior 60 days, underperforming BTC buy-and-hold (-11.82% that
+window) by ~12 points. The AVAX conclusion didn't generalize either — in
+this earlier window, **DOT/USD** showed the identical pattern AVAX
+showed in the other one (74% stop-loss rate, clear worst performer).
+AVAX wasn't uniquely broken; it was just whichever pair happened to be
+most volatile relative to a flat percentage stop in the window being
+looked at. Removing pairs one at a time as they show up doesn't fix
+that — a different pair takes the "worst performer" role in a different
+period.
+
+### ATR-based stop-loss/take-profit, replacing the flat percentages (2026-08-06)
+
+Fixes the actual mechanism behind both findings above:
+`research.compute_atr_based_stop_tp_pct()` sizes each trade's stop/TP off
+**that pair's own ATR(14) at entry time**, not one flat 0.75%/1.5% for
+every pair regardless of how volatile it naturally is —
+`CRYPTO_ATR_STOP_MULTIPLIER`/`CRYPTO_ATR_TP_MULTIPLIER` (default 1.5x/3x,
+preserving the original 2:1 reward:risk ratio) control the sizing. A
+naturally choppier pair gets proportionally more room before being
+called a "stop-out"; a calmer pair gets a tighter one — so the same
+relative risk applies to whichever pair happens to be volatile in a
+given period, instead of that pair repeatedly getting shaken out by its
+own normal noise.
+
+**How this is persisted per trade:** Alpaca doesn't offer a way to
+attach custom metadata to a position, and unlike the old flat globals,
+each trade's stop/TP now genuinely differs — so `research.
+encode_trade_params()`/`decode_trade_params()` pack the entry-time
+stop/TP into the buy order's `client_order_id` (e.g. `cs-sl35-tp70` =
+0.35% stop, 0.70% target), which `trade.place_order()` passes straight
+to Alpaca. `get_exit_flags()` recovers it from the entry order on every
+run via `get_position_trade_params()`. This follows the same "Alpaca's
+own order history is the source of truth, not local state that could
+desync" principle used everywhere else in this project (duplicate-order
+protection, position entry time, etc.) — no separate state file to keep
+in sync or lose on a crash. A position with no recoverable
+`client_order_id` (opened before this feature existed, or placed
+manually/interactively without it) falls back to the flat
+`STOP_LOSS_PCT`/`PROFIT_TARGET_PCT` defaults.
+
+The backtest mirrors this exactly: at entry, it computes stop/TP from
+that bar's own ATR and stores it on the in-memory `position` dict for
+the rest of that trade's simulated life — no persistence complexity
+there since a single `simulate_pair()` call already holds everything in
+memory. Re-validate with both the recent and out-of-sample backtest
+windows after this change before trusting it further — a fix motivated
+by two failures should be checked against both, not just declared done.
+
 ## Setup notes
 
 - Requires a **second, separate** Alpaca paper account — do not reuse the
@@ -464,4 +518,6 @@ larger change than was justified here for one data point.
   `CRYPTO_DAILY_NOTIONAL_CAP`, `CRYPTO_WEEKLY_NOTIONAL_CAP`,
   `CRYPTO_MAX_POSITIONS`, `CRYPTO_MAX_PER_CATEGORY`, `CRYPTO_PER_TRADE_PCT_CAP`,
   `CRYPTO_MAX_HOLD_HOURS`, `CRYPTO_PROFIT_TARGET_PCT`, `CRYPTO_STOP_LOSS_PCT`,
-  `CRYPTO_ATR_SPIKE_MULTIPLE`, `CRYPTO_TARGET_RISK_PCT`.
+  `CRYPTO_ATR_SPIKE_MULTIPLE`, `CRYPTO_TARGET_RISK_PCT`,
+  `CRYPTO_ATR_STOP_MULTIPLIER`, `CRYPTO_ATR_TP_MULTIPLIER`,
+  `CRYPTO_RSI_LOOKBACK_BARS`.

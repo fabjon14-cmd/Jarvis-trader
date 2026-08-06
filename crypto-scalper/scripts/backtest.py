@@ -567,6 +567,41 @@ def detail_pair(pair, lookback_days=60):
     }
 
 
+def compute_efficiency_ratio(closes):
+    """Kaufman's Efficiency Ratio: |net change| / sum(|day-to-day changes|).
+    Close to 1 = price moved efficiently in one direction (trending).
+    Close to 0 = lots of back-and-forth with little net progress (choppy/
+    ranging). Standard, simple regime metric — used here as Phase 1 of
+    checking whether regime actually predicts which strategy wins, before
+    investing in a full walk-forward harness. See CLAUDE.md "Regime
+    classification check"."""
+    if len(closes) < 2:
+        return None
+    net_change = abs(closes[-1] - closes[0])
+    path_length = sum(abs(closes[i] - closes[i - 1]) for i in range(1, len(closes)))
+    if path_length == 0:
+        return None
+    return round(net_change / path_length, 4)
+
+
+def regime_check(lookback_days=60, end_days_ago=0):
+    """BTC's efficiency ratio over one window — Phase 1 of the
+    regime-switching research scope: does this number actually predict
+    which strategy (mean-reversion vs trend-following) wins? Report
+    manually cross-referenced against backtest results, not automated
+    here since we already have the win/loss data from separate runs."""
+    bars = fetch_historical_bars("BTC/USD", timeframe="1Day", lookback_days=lookback_days, end_days_ago=end_days_ago)
+    closes = [b["c"] for b in bars]
+    er = compute_efficiency_ratio(closes)
+    net_pct = round((closes[-1] - closes[0]) / closes[0] * 100, 2) if len(closes) >= 2 else None
+    return {
+        "window_description": f"{lookback_days + end_days_ago} to {end_days_ago} days ago" if end_days_ago else f"most recent {lookback_days} days",
+        "efficiency_ratio": er,
+        "net_pct_change": net_pct,
+        "bars_used": len(closes),
+    }
+
+
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "detail":
         pair = sys.argv[2] if len(sys.argv) > 2 else "BTC/USD"
@@ -578,6 +613,10 @@ if __name__ == "__main__":
         use_regime_filter = not (len(sys.argv) > 4 and sys.argv[4] == "noregime")
         result = run_trend_backtest(lookback, end_days_ago=end_days_ago, use_regime_filter=use_regime_filter)
         print(json.dumps(result, indent=2))
+    elif len(sys.argv) > 1 and sys.argv[1] == "regime-check":
+        lookback = int(sys.argv[2]) if len(sys.argv) > 2 else 60
+        end_days_ago = int(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] else 0
+        print(json.dumps(regime_check(lookback, end_days_ago=end_days_ago), indent=2))
     else:
         lookback = int(sys.argv[1]) if len(sys.argv) > 1 else 60
         exclude = sys.argv[2].split(",") if len(sys.argv) > 2 and sys.argv[2] else None

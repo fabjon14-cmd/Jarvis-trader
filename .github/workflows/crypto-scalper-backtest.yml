@@ -37,7 +37,7 @@ on:
         required: false
         default: ""
       strategy:
-        description: "Set to 'trend' to run the experimental trend-following variant instead of the default mean-reversion one"
+        description: "Set to 'trend' for the trend-following variant, or 'regime-check' to report BTC's efficiency ratio for the window instead of running a strategy"
         required: false
         default: ""
 
@@ -68,6 +68,8 @@ jobs:
             python3 crypto-scalper/scripts/backtest.py detail "${{ github.event.inputs.detail_pair }}" "${{ github.event.inputs.lookback_days || 60 }}"
           elif [ "${{ github.event.inputs.strategy }}" = "trend" ]; then
             python3 crypto-scalper/scripts/backtest.py trend "${{ github.event.inputs.lookback_days || 60 }}" "${{ github.event.inputs.end_days_ago || 0 }}" "${{ github.event.inputs.use_regime_filter }}"
+          elif [ "${{ github.event.inputs.strategy }}" = "regime-check" ]; then
+            python3 crypto-scalper/scripts/backtest.py regime-check "${{ github.event.inputs.lookback_days || 60 }}" "${{ github.event.inputs.end_days_ago || 0 }}"
           else
             python3 crypto-scalper/scripts/backtest.py "${{ github.event.inputs.lookback_days || 60 }}" "${{ github.event.inputs.exclude_pairs }}" "${{ github.event.inputs.end_days_ago || 0 }}" "${{ github.event.inputs.use_regime_filter }}"
           fi

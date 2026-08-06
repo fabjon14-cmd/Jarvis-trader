@@ -211,6 +211,43 @@ def compute_atr_series(bars, period=14):
 ATR_SPIKE_MULTIPLE = float(os.getenv("CRYPTO_ATR_SPIKE_MULTIPLE", "2.0"))
 
 
+def get_market_regime():
+    """Broad market regime gate: EMA(20) > EMA(50) on BTC/USD DAILY bars —
+    slower/broader than the 1-hour trend filter, meant to catch genuine
+    multi-week downtrends rather than short-term dips. Added 2026-08-06:
+    no stop-loss sizing (flat, tight ATR, wide ATR) generalized between a
+    calm/positive 60-day window and an earlier declining one — every
+    config did fine in the calm window and badly in the declining one,
+    pointing at the dip-buy strategy itself lacking edge in a real
+    downtrend, not at exit sizing. Only BTC is checked (crypto pairs are
+    highly correlated with its overall trend) — when bearish, ALL new buy
+    signals are blocked regardless of pair; existing positions/exits are
+    unaffected. Only fully completed daily bars are used, same principle
+    as the other timeframe filters."""
+    bars = get_crypto_bars("BTC/USD", timeframe="1Day", limit=80)
+    now = datetime.now(timezone.utc)
+    completed = []
+    for b in bars:
+        try:
+            bar_start = datetime.strptime(b["t"][:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+        except (ValueError, KeyError):
+            continue
+        if bar_start + timedelta(days=1) <= now:
+            completed.append(b)
+
+    if len(completed) < 50:
+        return {"error": f"only {len(completed)} completed daily BTC bars available, need at least 50", "bullish": False}
+
+    closes = [b["c"] for b in completed]
+    ema20_series = compute_ema_series(closes, 20)
+    ema50_series = compute_ema_series(closes, 50)
+    if not ema20_series or not ema50_series:
+        return {"error": "insufficient daily data for EMA20/50", "bullish": False}
+
+    ema20, ema50 = ema20_series[-1], ema50_series[-1]
+    return {"error": None, "ema20_daily": round(ema20, 4), "ema50_daily": round(ema50, 4), "bullish": ema20 > ema50}
+
+
 def get_1h_trend_alignment(pair, limit=80):
     """EMA(20) > EMA(50) computed on 1-HOUR bars — deliberately a different,
     slower timeframe from the 5-minute entry signal (changed 2026-08-05,

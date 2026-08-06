@@ -133,11 +133,41 @@ def lookup_1h_alignment(lookup, bar_time):
     return lookup[idx][1], lookup[idx][2]
 
 
-def simulate_pair(pair, bars, hour_bars):
+def build_regime_lookup(btc_daily_bars):
+    """Mirrors research.get_market_regime(), replayed historically — same
+    pattern as build_1h_alignment_lookup but on daily bars and a single
+    bullish bool. A day's EMA20/50 only become "known" at bar_start + 1 day."""
+    closes = [b["c"] for b in btc_daily_bars]
+    ema20_series = research.compute_ema_series(closes, 20)
+    ema50_series = research.compute_ema_series(closes, 50)
+    lookup = []
+    for bar_idx in range(49, len(btc_daily_bars)):
+        ema20 = ema20_series[bar_idx - 19]
+        ema50 = ema50_series[bar_idx - 49]
+        available_from = _bar_time(btc_daily_bars[bar_idx]) + timedelta(days=1)
+        lookup.append((available_from, ema20 > ema50))
+    return lookup
+
+
+def lookup_regime(lookup, bar_time):
+    """Latest bullish bool whose available_from <= bar_time, or None if no
+    daily bar had closed yet at that point in history."""
+    if not lookup:
+        return None
+    times = [entry[0] for entry in lookup]
+    idx = bisect.bisect_right(times, bar_time) - 1
+    if idx < 0:
+        return None
+    return lookup[idx][1]
+
+
+def simulate_pair(pair, bars, hour_bars, regime_lookup=None):
     """Replay the exact live signal/exit logic bar-by-bar. Returns a list of
     completed trades (dicts with entry/exit price, pnl_pct, exit_reason,
     bars_held). `hour_bars` backs the 1-hour EMA20/50 trend-alignment
-    check — see build_1h_alignment_lookup()."""
+    check — see build_1h_alignment_lookup(). `regime_lookup`, if given,
+    additionally blocks new entries when the broader market (BTC daily
+    EMA20/50) isn't bullish — see build_regime_lookup()."""
     closes = [b["c"] for b in bars]
     alignment_lookup = build_1h_alignment_lookup(hour_bars)
     max_hold_bars = int(research.MAX_HOLD_HOURS * 60 / 5)
@@ -210,7 +240,12 @@ def simulate_pair(pair, bars, hour_bars):
         atr_avg20 = sum(atr_series[-20:]) / 20
         atr_volatility_spike = atr_avg20 > 0 and atr_series[-1] > research.ATR_SPIKE_MULTIPLE * atr_avg20
 
-        if rsi_recently_oversold and crossed_above and ema_alignment_bullish and not atr_volatility_spike:
+        regime_ok = True
+        if regime_lookup is not None:
+            regime_bullish = lookup_regime(regime_lookup, _bar_time(bar))
+            regime_ok = bool(regime_bullish)  # None (no daily bar closed yet) counts as not-ok, fail closed
+
+        if rsi_recently_oversold and crossed_above and ema_alignment_bullish and not atr_volatility_spike and regime_ok:
             entry_price = curr_close * (1 + LIMIT_SLIPPAGE_BUFFER)
             # ATR-based stop/TP, fixed at entry — sized off THIS pair's own
             # volatility at this point in history, same as live. Falls back
@@ -230,14 +265,23 @@ def simulate_pair(pair, bars, hour_bars):
     return trades
 
 
-def run_backtest(lookback_days=60, exclude_pairs=None, end_days_ago=0):
+def run_backtest(lookback_days=60, exclude_pairs=None, end_days_ago=0, use_regime_filter=False):
     """exclude_pairs: optional list of pairs to skip — for testing "what if
     we dropped this pair" without touching the live watchlist.json.
     end_days_ago: shift the whole window backward — see
-    fetch_historical_bars()'s docstring. Used for out-of-sample validation."""
+    fetch_historical_bars()'s docstring. Used for out-of-sample validation.
+    use_regime_filter: gate all pairs' entries on BTC's own daily EMA20/50
+    trend — see research.get_market_regime()/build_regime_lookup()."""
     pairs = [p for p in _load_watchlist() if p not in (exclude_pairs or [])]
     all_trades = []
     per_pair_bar_counts = {}
+
+    regime_lookup = None
+    if use_regime_filter:
+        # +55 days padding so daily EMA(50) has enough history behind the
+        # very first 5-minute bar being tested, not just from lookback start.
+        btc_daily_bars = fetch_historical_bars("BTC/USD", timeframe="1Day", lookback_days=lookback_days + 55, end_days_ago=end_days_ago)
+        regime_lookup = build_regime_lookup(btc_daily_bars)
 
     for pair in pairs:
         bars = fetch_historical_bars(pair, lookback_days=lookback_days, end_days_ago=end_days_ago)
@@ -249,7 +293,7 @@ def run_backtest(lookback_days=60, exclude_pairs=None, end_days_ago=0):
         hour_bars = fetch_historical_bars(pair, timeframe="1Hour", lookback_days=lookback_days + 5, end_days_ago=end_days_ago)
         if len(hour_bars) < 50:
             continue
-        all_trades.extend(simulate_pair(pair, bars, hour_bars))
+        all_trades.extend(simulate_pair(pair, bars, hour_bars, regime_lookup=regime_lookup))
 
     wins = [t for t in all_trades if t["pnl_pct"] > 0]
     win_rate = round(len(wins) / len(all_trades) * 100, 1) if all_trades else None
@@ -365,5 +409,6 @@ if __name__ == "__main__":
         lookback = int(sys.argv[1]) if len(sys.argv) > 1 else 60
         exclude = sys.argv[2].split(",") if len(sys.argv) > 2 and sys.argv[2] else None
         end_days_ago = int(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] else 0
-        result = run_backtest(lookback, exclude_pairs=exclude, end_days_ago=end_days_ago)
+        use_regime_filter = len(sys.argv) > 4 and sys.argv[4] == "regime"
+        result = run_backtest(lookback, exclude_pairs=exclude, end_days_ago=end_days_ago, use_regime_filter=use_regime_filter)
         print(json.dumps(result, indent=2))

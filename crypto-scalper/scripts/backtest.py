@@ -265,6 +265,166 @@ def simulate_pair(pair, bars, hour_bars, regime_lookup=None):
     return trades
 
 
+# --- Experimental: trend-following variant (opposite philosophy from the
+# mean-reversion strategy above) --- see run_trend_backtest()'s docstring.
+TREND_TP_ATR_MULTIPLIER = float(os.getenv("CRYPTO_TREND_TP_ATR_MULTIPLIER") or "20.0")
+TREND_MAX_HOLD_HOURS = float(os.getenv("CRYPTO_TREND_MAX_HOLD_HOURS") or "24.0")
+
+
+def simulate_pair_trend(pair, bars, hour_bars, regime_lookup):
+    """Momentum/breakout entry instead of mean-reversion: buy when price
+    breaks ABOVE the 1-hour EMA(20) (not a dip), with 1-hour AND daily
+    uptrend both required (not just checked), and NO RSI-oversold
+    requirement at all — this is "buy strength, confirmed by multiple
+    timeframes" instead of "buy weakness, hope it reverses". Exit keeps
+    the same ATR-based stop for risk control but with a much wider
+    take-profit (TREND_TP_ATR_MULTIPLIER, default 20x ATR) and longer max
+    hold (TREND_MAX_HOLD_HOURS, default 24h) — "cut losses short, let
+    winners run" is the standard trend-following exit philosophy, the
+    opposite of mean-reversion's tight symmetric targets."""
+    closes = [b["c"] for b in bars]
+    alignment_lookup = build_1h_alignment_lookup(hour_bars)
+    max_hold_bars = int(TREND_MAX_HOLD_HOURS * 60 / 5)
+    trades = []
+    position = None
+
+    for i in range(len(bars)):
+        bar = bars[i]
+
+        if position:
+            bars_held = i - position["entry_idx"]
+            hit_tp = bar["h"] >= position["tp_price"]
+            hit_sl = bar["l"] <= position["sl_price"]
+            timed_out = bars_held >= max_hold_bars
+
+            if hit_sl:
+                exit_price, exit_reason = position["sl_price"], "stop_loss"
+            elif hit_tp:
+                exit_price = position["tp_price"] * (1 - LIMIT_SLIPPAGE_BUFFER)
+                exit_reason = "take_profit"
+            elif timed_out:
+                exit_price, exit_reason = bar["c"], "timeout"
+            else:
+                continue
+
+            pnl_pct = (exit_price - position["entry_price"]) / position["entry_price"] * 100
+            trades.append({
+                "pair": pair,
+                "entry_time": bars[position["entry_idx"]]["t"],
+                "exit_time": bar["t"],
+                "entry_price": position["entry_price"],
+                "exit_price": exit_price,
+                "stop_pct": position.get("stop_pct"),
+                "tp_pct": position.get("tp_pct"),
+                "pnl_pct": round(pnl_pct, 4),
+                "exit_reason": exit_reason,
+                "bars_held": bars_held,
+            })
+            position = None
+            continue
+
+        if i < WARMUP_BARS:
+            continue
+
+        window_bars = bars[max(0, i + 1 - EMA_WINDOW_BARS):i + 1]
+        window_closes = [b["c"] for b in window_bars]
+
+        ema20_series = research.compute_ema_series(window_closes, 20)
+        atr_series = research.compute_atr_series(window_bars, 14)
+        if len(ema20_series) < 2 or len(atr_series) < 20:
+            continue
+
+        alignment = lookup_1h_alignment(alignment_lookup, _bar_time(bar))
+        if alignment is None:
+            continue
+        ema20_1h, ema50_1h = alignment
+
+        regime_bullish = lookup_regime(regime_lookup, _bar_time(bar))
+        if not regime_bullish:
+            continue  # daily uptrend REQUIRED, fail closed if unknown
+
+        prev_close, curr_close = closes[i - 1], closes[i]
+        # Breakout above the 1-HOUR EMA20 (a real higher-timeframe level),
+        # not the 5-min one — a much more meaningful "this broke out" event
+        # than crossing a level that resets every 5 minutes.
+        breakout = prev_close <= ema20_1h and curr_close > ema20_1h
+        uptrend_1h = ema20_1h > ema50_1h
+        atr_avg20 = sum(atr_series[-20:]) / 20
+        atr_volatility_spike = atr_avg20 > 0 and atr_series[-1] > research.ATR_SPIKE_MULTIPLE * atr_avg20
+
+        if breakout and uptrend_1h and not atr_volatility_spike:
+            entry_price = curr_close * (1 + LIMIT_SLIPPAGE_BUFFER)
+            stop_pct, _ = research.compute_atr_based_stop_tp_pct(entry_price, atr_series[-1])
+            if stop_pct is None:
+                stop_pct = research.STOP_LOSS_PCT
+            tp_pct = round(TREND_TP_ATR_MULTIPLIER * atr_series[-1] / entry_price * 100, 4)
+            position = {
+                "entry_idx": i,
+                "entry_price": entry_price,
+                "stop_pct": stop_pct,
+                "tp_pct": tp_pct,
+                "tp_price": entry_price * (1 + tp_pct / 100),
+                "sl_price": entry_price * (1 - stop_pct / 100),
+            }
+
+    return trades
+
+
+def run_trend_backtest(lookback_days=60, exclude_pairs=None, end_days_ago=0):
+    """Aggregate report for the trend-following variant — same structure
+    as run_backtest() but calling simulate_pair_trend(). Regime filter is
+    ALWAYS on here (not optional) since trading with the trend, not
+    against it, is the entire premise."""
+    pairs = [p for p in _load_watchlist() if p not in (exclude_pairs or [])]
+    all_trades = []
+
+    btc_daily_bars = fetch_historical_bars("BTC/USD", timeframe="1Day", lookback_days=lookback_days + 55, end_days_ago=end_days_ago)
+    regime_lookup = build_regime_lookup(btc_daily_bars)
+
+    for pair in pairs:
+        bars = fetch_historical_bars(pair, lookback_days=lookback_days, end_days_ago=end_days_ago)
+        if len(bars) < WARMUP_BARS + 20:
+            continue
+        hour_bars = fetch_historical_bars(pair, timeframe="1Hour", lookback_days=lookback_days + 5, end_days_ago=end_days_ago)
+        if len(hour_bars) < 50:
+            continue
+        all_trades.extend(simulate_pair_trend(pair, bars, hour_bars, regime_lookup))
+
+    wins = [t for t in all_trades if t["pnl_pct"] > 0]
+    win_rate = round(len(wins) / len(all_trades) * 100, 1) if all_trades else None
+    compounded = 1.0
+    for t in all_trades:
+        compounded *= (1 + t["pnl_pct"] / 100)
+    cumulative_compounded_pct = round((compounded - 1) * 100, 2)
+    equity_curve = [1.0]
+    for t in all_trades:
+        equity_curve.append(equity_curve[-1] * (1 + t["pnl_pct"] / 100))
+    peak = equity_curve[0]
+    max_drawdown_pct = 0.0
+    for e in equity_curve:
+        peak = max(peak, e)
+        max_drawdown_pct = min(max_drawdown_pct, (e - peak) / peak * 100)
+    exit_reason_counts = {}
+    for t in all_trades:
+        exit_reason_counts[t["exit_reason"]] = exit_reason_counts.get(t["exit_reason"], 0) + 1
+
+    btc_bars = fetch_historical_bars("BTC/USD", timeframe="1Day", lookback_days=lookback_days, end_days_ago=end_days_ago)
+    btc_buy_and_hold_pct = round((btc_bars[-1]["c"] - btc_bars[0]["c"]) / btc_bars[0]["c"] * 100, 2) if len(btc_bars) >= 2 else None
+
+    return {
+        "strategy": "trend_following_experimental",
+        "lookback_days": lookback_days,
+        "end_days_ago": end_days_ago,
+        "window_description": f"{lookback_days + end_days_ago} to {end_days_ago} days ago" if end_days_ago else f"most recent {lookback_days} days",
+        "total_trades": len(all_trades),
+        "win_rate_pct": win_rate,
+        "cumulative_return_pct_compounded": cumulative_compounded_pct,
+        "max_drawdown_pct": round(max_drawdown_pct, 2),
+        "exit_reason_counts": exit_reason_counts,
+        "btc_buy_and_hold_pct_same_window": btc_buy_and_hold_pct,
+    }
+
+
 def run_backtest(lookback_days=60, exclude_pairs=None, end_days_ago=0, use_regime_filter=False):
     """exclude_pairs: optional list of pairs to skip — for testing "what if
     we dropped this pair" without touching the live watchlist.json.
@@ -405,6 +565,11 @@ if __name__ == "__main__":
         pair = sys.argv[2] if len(sys.argv) > 2 else "BTC/USD"
         lookback = int(sys.argv[3]) if len(sys.argv) > 3 else 60
         print(json.dumps(detail_pair(pair, lookback), indent=2))
+    elif len(sys.argv) > 1 and sys.argv[1] == "trend":
+        lookback = int(sys.argv[2]) if len(sys.argv) > 2 else 60
+        end_days_ago = int(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] else 0
+        result = run_trend_backtest(lookback, end_days_ago=end_days_ago)
+        print(json.dumps(result, indent=2))
     else:
         lookback = int(sys.argv[1]) if len(sys.argv) > 1 else 60
         exclude = sys.argv[2].split(",") if len(sys.argv) > 2 and sys.argv[2] else None

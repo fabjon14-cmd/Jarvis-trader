@@ -1,23 +1,26 @@
 # Crypto Scalper — Project Notes
 
-## ⚠ Live trading paused (2026-08-06) — read this before assuming it's doing anything
+## ⚠ Trading live despite a negative backtest finding (2026-08-06) — read before assuming this is validated
 
-`CRYPTO_TRADING_PAUSED=1` in `.github/workflows/crypto-scalper.yml` blocks
-all NEW buys. The scalper still fires every 5 minutes, exits (stop-loss/
-take-profit/timeout) still run normally for any open position, and the
-journal still logs why every pair holds — this is a deliberate pause, not
-the workflow being broken or disabled.
+This agent was briefly paused, then **resumed the same day on the
+operator's explicit, informed instruction**, after being shown the
+finding below and confirming they wanted it running anyway on this
+paper account. This is not an oversight or a stale warning — it's a
+deliberate choice being made with the numbers in front of the operator,
+and it should stay that way: don't let a future run of this bot, or a
+future editor of this file, quietly forget why this line exists.
 
-**Why:** a full research pass on 2026-08-06 (documented in detail under
-"ATR multiplier calibration" and the sections after it below) tested this
-signal — and a from-scratch trend-following alternative — across **8
-independent, non-overlapping 60-day windows spanning 480 days (16 months)
-of real market history**. Results, averaged across all 8 windows:
+**The finding:** a full research pass the same day (documented in detail
+under "ATR multiplier calibration" and the sections after it below)
+tested this signal — and a from-scratch trend-following alternative —
+across **8 independent, non-overlapping 60-day windows spanning 480 days
+(16 months) of real market history**. Results, averaged across all 8
+windows:
 
 | | Avg return/window | Windows profitable |
 |---|---|---|
-| Mean-reversion (this strategy) | **-22.2%** | 1 of 8 |
-| Trend-following (alternative tried) | **-42.4%** | 0 of 8 |
+| Mean-reversion (this strategy, currently live) | **-22.2%** | 1 of 8 |
+| Trend-following (alternative tried, not live) | **-42.4%** | 0 of 8 |
 | BTC buy-and-hold (benchmark) | -2.25% | — |
 
 Both signal families lose money on average, both lose considerably more
@@ -25,16 +28,12 @@ than simply holding BTC, and a market-regime classifier (efficiency
 ratio — see "Regime classification check" below) does not predict which
 one wins in a given window. This isn't a thin or ambiguous result — it's
 a large-sample, multi-window, multi-strategy finding, not a single bad
-backtest. See the full section-by-section history below for every
-configuration tried (5+ variants) and why each was ruled out, if
-revisiting this.
+backtest.
 
-**To resume:** remove (or set to anything other than `1`)
-`CRYPTO_TRADING_PAUSED` in `.github/workflows/crypto-scalper.yml`. Do
-this only with a genuinely new reason to believe the signal has changed
-— not just because it's been a while, and not without at least the
-Phase 1/3 validation rigor used here (multiple independent out-of-sample
-windows, not one lucky-looking backtest).
+**To pause again:** set `CRYPTO_TRADING_PAUSED: "1"` back in the `env:`
+block of `.github/workflows/crypto-scalper.yml` — the mechanism is still
+in `scalper_agent.py` (`TRADING_PAUSED`), blocks new buys only, and
+never blocks exits on an open position.
 
 ---
 

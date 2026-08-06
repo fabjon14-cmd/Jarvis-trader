@@ -6,6 +6,14 @@ name: Crypto Scalper
 # requested 1-minute cadence). See crypto-scalper/CLAUDE.md for the strategy
 # and risk controls this runs under. workflow_dispatch allows a manual
 # one-off run for testing.
+#
+# NEW BUYS PAUSED (2026-08-06, CRYPTO_TRADING_PAUSED below) — an 8-window/
+# 480-day backtest found neither this strategy nor its trend-following
+# variant had positive expected value. This keeps firing so exits
+# (stop-loss/take-profit/timeout) still get managed for any open position
+# and the journal keeps a visible record of "why it's holding," rather than
+# disabling the workflow outright. See CLAUDE.md "Live trading paused" for
+# the full findings and how to resume.
 on:
   schedule:
     - cron: "*/5 * * * *"
@@ -39,6 +47,7 @@ jobs:
           CRYPTO_APCA_API_SECRET_KEY: ${{ secrets.CRYPTO_APCA_API_SECRET_KEY }}
           CRYPTO_APCA_BASE_URL: ${{ secrets.CRYPTO_APCA_BASE_URL }}
           CRYPTO_SCALPER_UNATTENDED: "1"
+          CRYPTO_TRADING_PAUSED: "1"
         run: python3 crypto-scalper/agent/scalper_agent.py
 
       - name: Commit journal update

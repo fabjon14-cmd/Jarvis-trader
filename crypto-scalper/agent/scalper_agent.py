@@ -41,6 +41,15 @@ PER_TRADE_PCT_CAP = trade.PER_TRADE_PCT_CAP
 MIN_REALISTIC_NOTIONAL = float(os.getenv("CRYPTO_MIN_REALISTIC_NOTIONAL", "10"))
 LIMIT_SLIPPAGE_BUFFER = float(os.getenv("CRYPTO_LIMIT_SLIPPAGE_BUFFER", "0.001"))  # 0.1%
 
+# Operator-decided pause on NEW buys only — set 2026-08-06 after an 8-window/
+# 480-day backtest found neither the mean-reversion nor trend-following
+# variant of this signal had positive expected value (averaging -22.2% and
+# -42.4% per 60-day window respectively, both worse than simply holding
+# BTC at -2.25%). Exits (stop-loss/take-profit/timeout) are NEVER paused by
+# this — same "a mandatory exit is never blocked by a buy-side gate"
+# principle as the circuit breaker. See CLAUDE.md "Live trading paused".
+TRADING_PAUSED = os.getenv("CRYPTO_TRADING_PAUSED") == "1"
+
 
 def _load_watchlist():
     with open(WATCHLIST_PATH) as f:
@@ -117,7 +126,9 @@ def run():
         headroom = 0
 
     buy_block_reason = None
-    if cb.get("halted"):
+    if TRADING_PAUSED:
+        buy_block_reason = "new-buy trading paused by operator decision (2026-08-06) pending strategy review — see CLAUDE.md 'Live trading paused'"
+    elif cb.get("halted"):
         buy_block_reason = f"circuit breaker halted: {'; '.join(cb.get('reasons', []))}"
     elif headroom < MIN_REALISTIC_NOTIONAL:
         buy_block_reason = f"daily/weekly headroom ${headroom:,.2f} below ${MIN_REALISTIC_NOTIONAL:.0f} realistic-trade floor"

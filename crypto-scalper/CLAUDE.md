@@ -1,5 +1,43 @@
 # Crypto Scalper — Project Notes
 
+## ⚠ Live trading paused (2026-08-06) — read this before assuming it's doing anything
+
+`CRYPTO_TRADING_PAUSED=1` in `.github/workflows/crypto-scalper.yml` blocks
+all NEW buys. The scalper still fires every 5 minutes, exits (stop-loss/
+take-profit/timeout) still run normally for any open position, and the
+journal still logs why every pair holds — this is a deliberate pause, not
+the workflow being broken or disabled.
+
+**Why:** a full research pass on 2026-08-06 (documented in detail under
+"ATR multiplier calibration" and the sections after it below) tested this
+signal — and a from-scratch trend-following alternative — across **8
+independent, non-overlapping 60-day windows spanning 480 days (16 months)
+of real market history**. Results, averaged across all 8 windows:
+
+| | Avg return/window | Windows profitable |
+|---|---|---|
+| Mean-reversion (this strategy) | **-22.2%** | 1 of 8 |
+| Trend-following (alternative tried) | **-42.4%** | 0 of 8 |
+| BTC buy-and-hold (benchmark) | -2.25% | — |
+
+Both signal families lose money on average, both lose considerably more
+than simply holding BTC, and a market-regime classifier (efficiency
+ratio — see "Regime classification check" below) does not predict which
+one wins in a given window. This isn't a thin or ambiguous result — it's
+a large-sample, multi-window, multi-strategy finding, not a single bad
+backtest. See the full section-by-section history below for every
+configuration tried (5+ variants) and why each was ruled out, if
+revisiting this.
+
+**To resume:** remove (or set to anything other than `1`)
+`CRYPTO_TRADING_PAUSED` in `.github/workflows/crypto-scalper.yml`. Do
+this only with a genuinely new reason to believe the signal has changed
+— not just because it's been a while, and not without at least the
+Phase 1/3 validation rigor used here (multiple independent out-of-sample
+windows, not one lucky-looking backtest).
+
+---
+
 A second, independent agent from the equities Trader in the repo root — its
 own, separate Alpaca **paper-trading** (fake money) account (own API keys,
 `CRYPTO_APCA_*` env vars, own equity curve), a different strategy, a
@@ -535,6 +573,61 @@ under this config without re-reading this section first. If revisiting
 this strategy, the honest next step is a proper multi-window/walk-forward
 validation process — treat any single day or single 60-day backtest
 window as anecdote, not evidence, given what happened here.
+
+### Regime classification check + trend-following alternative — the real answer (2026-08-06)
+
+Following up on "the honest next step is proper multi-window validation"
+above, immediately the same day: built `simulate_pair_trend()` (a
+from-scratch, opposite-philosophy strategy — buy breakouts above the
+1-hour EMA20 with 1-hour AND daily uptrend both required, no RSI-oversold
+gate at all, wide 20x-ATR take-profit and 24h max hold instead of tight
+symmetric targets — "cut losses short, let winners run") and
+`regime_check()` (Kaufman's Efficiency Ratio: net move ÷ total path
+length — 1.0 = pure trend, 0.0 = pure chop), then ran both strategies
+plus the regime metric across **8 independent, non-overlapping 60-day
+windows spanning 480 days**, the full history available across all 7
+watchlist pairs (SOL/USD's Alpaca listing is the limiting factor — data
+doesn't go back meaningfully further than ~480 days for it, confirmed by
+checking `bars_fetched_per_pair` at increasing depth before committing
+to this window count).
+
+| end_days_ago | Efficiency Ratio | BTC net | Mean-reversion | Trend-following |
+|---|---|---|---|---|
+| 0 (most recent) | 0.036 | +2.8% | +40.7% | -36.2% |
+| 60 | 0.128 | -11.8% | -23.2% | -0.9% |
+| 120 | 0.010 | +1.1% | -61.6% | -40.3% |
+| 180 | 0.253 | -24.8% | -26.4% | -45.1% |
+| 240 | 0.165 | -16.3% | -48.7% | -70.0% |
+| 300 | 0.075 | -5.9% | -22.6% | -67.1% |
+| 360 | 0.182 | +11.9% | -26.9% | -24.5% |
+| 420 | 0.271 | +25.1% | -8.9% | -55.3% |
+
+**Averages: mean-reversion -22.2%/window (1 of 8 profitable), trend-following
+-42.4%/window (0 of 8 profitable), BTC buy-and-hold -2.25%/window.**
+
+Two conclusions, both load-bearing for the pause at the top of this file:
+
+1. **The regime hypothesis doesn't hold.** The single most choppy window
+   (ER=0.010, "should" favor mean-reversion) was mean-reversion's *worst*
+   result, not its best. No clean relationship between efficiency ratio
+   and which strategy wins — this isn't "need more data to see the
+   pattern," 8 independent windows is enough to say the naive
+   trend-vs-chop theory doesn't predict outcomes here.
+2. **Trend-following is not a fix — it's worse**, nearly 2x the average
+   loss of mean-reversion. Building an opposite-philosophy strategy from
+   scratch and testing it properly (not just tuning the existing one
+   further) was the actual test of "is there a real edge hiding in a
+   different signal shape," and the answer came back no.
+
+This is why trading is paused rather than the live config being tuned
+again: this was a large-sample (8 windows, ~1,800+ total simulated
+trades across both strategies), multi-strategy result, not a single
+lucky or unlucky backtest. Re-litigating this needs a genuinely
+different data source or strategy class — not another indicator
+combination on the same 5-minute crypto bars — and that's a
+multi-session research undertaking, not a same-day parameter search.
+`simulate_pair_trend()`, `regime_check()`, and `compute_efficiency_ratio()`
+remain in `scripts/backtest.py` for that future work.
 
 ## Setup notes
 

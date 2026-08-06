@@ -61,12 +61,17 @@ def _load_watchlist():
         return json.load(f)["pairs"]
 
 
-def fetch_historical_bars(pair, timeframe="5Min", lookback_days=60):
+def fetch_historical_bars(pair, timeframe="5Min", lookback_days=60, end_days_ago=0):
     """Paginated historical fetch. Unlike research.get_crypto_bars (built for
     "give me the most recent N bars" live polling, single request), a 60+ day
     5-minute history exceeds Alpaca's per-request bar limit, so this follows
-    next_page_token until the full range is retrieved."""
-    end = datetime.now(timezone.utc)
+    next_page_token until the full range is retrieved.
+
+    end_days_ago shifts the whole window backward — e.g. lookback_days=60,
+    end_days_ago=60 fetches days 60-120 ago, a window that doesn't overlap
+    at all with the default (most recent 60 days). Used for out-of-sample
+    validation: testing a config on a period that had no part in tuning it."""
+    end = datetime.now(timezone.utc) - timedelta(days=end_days_ago)
     start = end - timedelta(days=lookback_days)
     url = "https://data.alpaca.markets/v1beta3/crypto/us/bars"
     all_bars = []
@@ -215,21 +220,23 @@ def simulate_pair(pair, bars, hour_bars):
     return trades
 
 
-def run_backtest(lookback_days=60, exclude_pairs=None):
+def run_backtest(lookback_days=60, exclude_pairs=None, end_days_ago=0):
     """exclude_pairs: optional list of pairs to skip — for testing "what if
-    we dropped this pair" without touching the live watchlist.json."""
+    we dropped this pair" without touching the live watchlist.json.
+    end_days_ago: shift the whole window backward — see
+    fetch_historical_bars()'s docstring. Used for out-of-sample validation."""
     pairs = [p for p in _load_watchlist() if p not in (exclude_pairs or [])]
     all_trades = []
     per_pair_bar_counts = {}
 
     for pair in pairs:
-        bars = fetch_historical_bars(pair, lookback_days=lookback_days)
+        bars = fetch_historical_bars(pair, lookback_days=lookback_days, end_days_ago=end_days_ago)
         per_pair_bar_counts[pair] = len(bars)
         if len(bars) < WARMUP_BARS + 20:
             continue
         # +5 days padding so the 1-hour EMA(50) has enough history behind
         # the very first 5-minute bar being tested, not just from lookback start.
-        hour_bars = fetch_historical_bars(pair, timeframe="1Hour", lookback_days=lookback_days + 5)
+        hour_bars = fetch_historical_bars(pair, timeframe="1Hour", lookback_days=lookback_days + 5, end_days_ago=end_days_ago)
         if len(hour_bars) < 50:
             continue
         all_trades.extend(simulate_pair(pair, bars, hour_bars))
@@ -289,11 +296,13 @@ def run_backtest(lookback_days=60, exclude_pairs=None):
         }
 
     # BTC buy-and-hold benchmark over the same historical window
-    btc_bars = fetch_historical_bars("BTC/USD", timeframe="1Day", lookback_days=lookback_days)
+    btc_bars = fetch_historical_bars("BTC/USD", timeframe="1Day", lookback_days=lookback_days, end_days_ago=end_days_ago)
     btc_buy_and_hold_pct = round((btc_bars[-1]["c"] - btc_bars[0]["c"]) / btc_bars[0]["c"] * 100, 2) if len(btc_bars) >= 2 else None
 
     return {
         "lookback_days": lookback_days,
+        "end_days_ago": end_days_ago,
+        "window_description": f"{lookback_days + end_days_ago} to {end_days_ago} days ago" if end_days_ago else f"most recent {lookback_days} days",
         "pairs_tested": pairs,
         "bars_fetched_per_pair": per_pair_bar_counts,
         "total_trades": len(all_trades),
@@ -345,5 +354,6 @@ if __name__ == "__main__":
     else:
         lookback = int(sys.argv[1]) if len(sys.argv) > 1 else 60
         exclude = sys.argv[2].split(",") if len(sys.argv) > 2 and sys.argv[2] else None
-        result = run_backtest(lookback, exclude_pairs=exclude)
+        end_days_ago = int(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] else 0
+        result = run_backtest(lookback, exclude_pairs=exclude, end_days_ago=end_days_ago)
         print(json.dumps(result, indent=2))

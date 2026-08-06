@@ -20,6 +20,10 @@ on:
         description: "Optional: comma-separated pairs to exclude from the aggregate report (e.g. AVAX/USD) — does not touch the live watchlist"
         required: false
         default: ""
+      end_days_ago:
+        description: "Shift the window backward by this many days (e.g. 60 = test the 60 days ending 60 days ago, for out-of-sample validation against a period not used to tune the strategy)"
+        required: false
+        default: "0"
 
 jobs:
   backtest:
@@ -45,5 +49,5 @@ jobs:
           if [ -n "${{ github.event.inputs.detail_pair }}" ]; then
             python3 crypto-scalper/scripts/backtest.py detail "${{ github.event.inputs.detail_pair }}" "${{ github.event.inputs.lookback_days || 60 }}"
           else
-            python3 crypto-scalper/scripts/backtest.py "${{ github.event.inputs.lookback_days || 60 }}" "${{ github.event.inputs.exclude_pairs }}"
+            python3 crypto-scalper/scripts/backtest.py "${{ github.event.inputs.lookback_days || 60 }}" "${{ github.event.inputs.exclude_pairs }}" "${{ github.event.inputs.end_days_ago || 0 }}"
           fi

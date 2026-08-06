@@ -339,9 +339,10 @@ def simulate_pair_trend(pair, bars, hour_bars, regime_lookup):
             continue
         ema20_1h, ema50_1h = alignment
 
-        regime_bullish = lookup_regime(regime_lookup, _bar_time(bar))
-        if not regime_bullish:
-            continue  # daily uptrend REQUIRED, fail closed if unknown
+        if regime_lookup is not None:
+            regime_bullish = lookup_regime(regime_lookup, _bar_time(bar))
+            if not regime_bullish:
+                continue  # daily uptrend required when the filter is on, fail closed if unknown
 
         prev_close, curr_close = closes[i - 1], closes[i]
         # Breakout above the 1-HOUR EMA20 (a real higher-timeframe level),
@@ -370,16 +371,22 @@ def simulate_pair_trend(pair, bars, hour_bars, regime_lookup):
     return trades
 
 
-def run_trend_backtest(lookback_days=60, exclude_pairs=None, end_days_ago=0):
+def run_trend_backtest(lookback_days=60, exclude_pairs=None, end_days_ago=0, use_regime_filter=True):
     """Aggregate report for the trend-following variant — same structure
-    as run_backtest() but calling simulate_pair_trend(). Regime filter is
-    ALWAYS on here (not optional) since trading with the trend, not
-    against it, is the entire premise."""
+    as run_backtest() but calling simulate_pair_trend(). use_regime_filter
+    defaults to True (trading with the trend is the whole premise) but is
+    overridable — the daily EMA20/50 gate turned out to be "off" for most
+    of the recent window even during a mild recovery (same issue found
+    testing it against the mean-reversion strategy), so it's worth being
+    able to isolate whether the breakout logic itself has anything before
+    concluding the regime gate broke it."""
     pairs = [p for p in _load_watchlist() if p not in (exclude_pairs or [])]
     all_trades = []
 
-    btc_daily_bars = fetch_historical_bars("BTC/USD", timeframe="1Day", lookback_days=lookback_days + 55, end_days_ago=end_days_ago)
-    regime_lookup = build_regime_lookup(btc_daily_bars)
+    regime_lookup = None
+    if use_regime_filter:
+        btc_daily_bars = fetch_historical_bars("BTC/USD", timeframe="1Day", lookback_days=lookback_days + 55, end_days_ago=end_days_ago)
+        regime_lookup = build_regime_lookup(btc_daily_bars)
 
     for pair in pairs:
         bars = fetch_historical_bars(pair, lookback_days=lookback_days, end_days_ago=end_days_ago)
@@ -568,7 +575,8 @@ if __name__ == "__main__":
     elif len(sys.argv) > 1 and sys.argv[1] == "trend":
         lookback = int(sys.argv[2]) if len(sys.argv) > 2 else 60
         end_days_ago = int(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] else 0
-        result = run_trend_backtest(lookback, end_days_ago=end_days_ago)
+        use_regime_filter = not (len(sys.argv) > 4 and sys.argv[4] == "noregime")
+        result = run_trend_backtest(lookback, end_days_ago=end_days_ago, use_regime_filter=use_regime_filter)
         print(json.dumps(result, indent=2))
     else:
         lookback = int(sys.argv[1]) if len(sys.argv) > 1 else 60

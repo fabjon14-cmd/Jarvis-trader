@@ -33,7 +33,7 @@ on:
         required: false
         default: ""
       use_regime_filter:
-        description: "Set to 'regime' to gate all entries on BTC's own daily EMA20/50 trend"
+        description: "For the default (mean-reversion) strategy: 'regime' turns the BTC daily-trend gate ON (off by default). For strategy=trend: 'noregime' turns it OFF (on by default there)."
         required: false
         default: ""
       strategy:
@@ -67,7 +67,7 @@ jobs:
           if [ -n "${{ github.event.inputs.detail_pair }}" ]; then
             python3 crypto-scalper/scripts/backtest.py detail "${{ github.event.inputs.detail_pair }}" "${{ github.event.inputs.lookback_days || 60 }}"
           elif [ "${{ github.event.inputs.strategy }}" = "trend" ]; then
-            python3 crypto-scalper/scripts/backtest.py trend "${{ github.event.inputs.lookback_days || 60 }}" "${{ github.event.inputs.end_days_ago || 0 }}"
+            python3 crypto-scalper/scripts/backtest.py trend "${{ github.event.inputs.lookback_days || 60 }}" "${{ github.event.inputs.end_days_ago || 0 }}" "${{ github.event.inputs.use_regime_filter }}"
           else
             python3 crypto-scalper/scripts/backtest.py "${{ github.event.inputs.lookback_days || 60 }}" "${{ github.event.inputs.exclude_pairs }}" "${{ github.event.inputs.end_days_ago || 0 }}" "${{ github.event.inputs.use_regime_filter }}"
           fi

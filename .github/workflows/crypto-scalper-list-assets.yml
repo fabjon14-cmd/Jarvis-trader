@@ -1,0 +1,29 @@
+name: Crypto Scalper List Assets
+
+# On-demand only. Prints every crypto pair actually tradable on this
+# account, so watchlist expansions use real symbols instead of guessed
+# ones. See crypto-scalper/scripts/list_assets.py.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  list-assets:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests python-dotenv
+
+      - name: List tradable crypto assets
+        env:
+          CRYPTO_APCA_API_KEY_ID: ${{ secrets.CRYPTO_APCA_API_KEY_ID }}
+          CRYPTO_APCA_API_SECRET_KEY: ${{ secrets.CRYPTO_APCA_API_SECRET_KEY }}
+          CRYPTO_APCA_BASE_URL: ${{ secrets.CRYPTO_APCA_BASE_URL }}
+        run: python3 crypto-scalper/scripts/list_assets.py

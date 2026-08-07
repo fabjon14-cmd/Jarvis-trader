@@ -102,11 +102,30 @@ def _find_duplicate_order(symbol, qty, side, limit_price):
     return None
 
 
+def _check_buy_allowed(symbol, qty, notional):
+    """Shared pre-checks for any BUY (plain or bracket) — one definition so
+    place_order and place_bracket_order can't drift apart. Returns a
+    rejection dict, or None if the buy is allowed."""
+    if _orders_this_run >= MAX_ORDERS_PER_RUN:
+        return {"placed": False, "reason": f"max orders per run ({MAX_ORDERS_PER_RUN}) reached"}
+    if notional > MAX_ORDER_NOTIONAL:
+        return {"placed": False, "reason": f"order notional ${notional:.2f} exceeds cap ${MAX_ORDER_NOTIONAL}"}
+    cb = get_circuit_breaker_status()
+    if cb.get("halted"):
+        return {"placed": False, "reason": f"circuit breaker halted: {cb.get('reason')}"}
+    deployed_today = get_deployed_notional(symbols=WATCHLIST_SYMBOLS)
+    if deployed_today + notional > DAILY_NOTIONAL_CAP:
+        return {"placed": False, "reason": f"daily notional cap ${DAILY_NOTIONAL_CAP} would be exceeded (${deployed_today:.2f} already deployed today)"}
+    return None
+
+
 def place_order(symbol, qty, side, limit_price=None, market=False, client_order_id=None):
-    """Place a buy or sell order. market=True is reserved for the forced
-    end-of-day flatten and the stop-loss exit, matching the crypto scalper's
-    'stop-loss/mandatory exits are the one case where a guaranteed fill
-    beats a resting limit order' reasoning."""
+    """Place a plain buy or sell order (no attached SL/TP legs). Used for
+    sell-side exits (crossover reversal, forced EOD flatten) — new BUY
+    entries go through place_bracket_order instead (see CLAUDE.md
+    'Bracket orders'). market=True is reserved for the forced end-of-day
+    flatten, matching the crypto scalper's 'a mandatory exit needs a
+    guaranteed fill, not a resting limit order' reasoning."""
     if UNATTENDED and not market and limit_price is None:
         return {"placed": False, "reason": "unattended runs require a limit price (or market=True for a mandatory exit)"}
 
@@ -115,20 +134,10 @@ def place_order(symbol, qty, side, limit_price=None, market=False, client_order_
         return {"placed": False, "duplicate": True, "existing_order": duplicate}
 
     if side == "buy":
-        if MAX_ORDERS_PER_RUN and _orders_this_run_check():
-            return {"placed": False, "reason": f"max orders per run ({MAX_ORDERS_PER_RUN}) reached"}
-
         notional = float(qty) * float(limit_price or 0)
-        if notional > MAX_ORDER_NOTIONAL:
-            return {"placed": False, "reason": f"order notional ${notional:.2f} exceeds cap ${MAX_ORDER_NOTIONAL}"}
-
-        cb = get_circuit_breaker_status()
-        if cb.get("halted"):
-            return {"placed": False, "reason": f"circuit breaker halted: {cb.get('reason')}"}
-
-        deployed_today = get_deployed_notional(symbols=WATCHLIST_SYMBOLS)
-        if deployed_today + notional > DAILY_NOTIONAL_CAP:
-            return {"placed": False, "reason": f"daily notional cap ${DAILY_NOTIONAL_CAP} would be exceeded (${deployed_today:.2f} already deployed today)"}
+        rejection = _check_buy_allowed(symbol, qty, notional)
+        if rejection:
+            return rejection
 
     if not confirm(f"{side.upper()} {qty} {symbol}" + (f" @ limit {limit_price}" if limit_price else " @ market") + "?"):
         return {"placed": False, "reason": "Declined."}
@@ -156,8 +165,71 @@ def place_order(symbol, qty, side, limit_price=None, market=False, client_order_
     return {**response.json(), "placed": True}
 
 
-def _orders_this_run_check():
-    return _orders_this_run >= MAX_ORDERS_PER_RUN
+def place_bracket_order(symbol, qty, limit_price, stop_price, tp_price, client_order_id=None):
+    """Buy entry with broker-managed stop-loss and take-profit legs
+    attached (Alpaca order_class='bracket') — see CLAUDE.md 'Bracket
+    orders' for why: the stop/TP fire immediately at the broker on a real
+    price cross, not only when this agent happens to poll every 5 minutes.
+    Shares the exact same duplicate-check and buy-side caps as place_order
+    (via _check_buy_allowed) so a bracket entry can't bypass anything a
+    plain entry couldn't."""
+    if UNATTENDED and limit_price is None:
+        return {"placed": False, "reason": "unattended runs require a limit price"}
+    if stop_price >= limit_price or tp_price <= limit_price:
+        return {"placed": False, "reason": f"invalid bracket levels: stop={stop_price} limit={limit_price} tp={tp_price} (need stop < limit < tp for a long)"}
+
+    duplicate = _find_duplicate_order(symbol, qty, "buy", limit_price)
+    if duplicate:
+        return {"placed": False, "duplicate": True, "existing_order": duplicate}
+
+    notional = float(qty) * float(limit_price)
+    rejection = _check_buy_allowed(symbol, qty, notional)
+    if rejection:
+        return rejection
+
+    if not confirm(f"BUY {qty} {symbol} @ limit {limit_price} (bracket: stop {stop_price} / tp {tp_price})?"):
+        return {"placed": False, "reason": "Declined."}
+
+    order = {
+        "symbol": symbol,
+        "qty": str(qty),
+        "side": "buy",
+        "type": "limit",
+        "limit_price": str(limit_price),
+        "time_in_force": "day",
+        "order_class": "bracket",
+        "take_profit": {"limit_price": str(tp_price)},
+        "stop_loss": {"stop_price": str(stop_price)},
+    }
+    if client_order_id:
+        order["client_order_id"] = client_order_id
+
+    url = f"{BASE_URL}/v2/orders"
+    response = requests.post(url, headers=_headers(json_content=True), json=order, timeout=REQUEST_TIMEOUT)
+    if not response.ok:
+        return {"placed": False, "reason": f"Alpaca rejected the order ({response.status_code}): {response.text}"}
+
+    global _orders_this_run
+    _orders_this_run += 1
+    return {**response.json(), "placed": True}
+
+
+def cancel_symbol_orders(symbol):
+    """Cancel every open order for `symbol` — called before a manual
+    crossover-reversal or EOD-flatten exit, to clear a bracket entry's
+    still-resting stop-loss/take-profit legs first. Without this, the
+    manual sell could conflict with (or get rejected by) the qty already
+    held by the bracket's open child orders."""
+    url = f"{BASE_URL}/v2/orders"
+    params = {"status": "open", "symbols": symbol}
+    response = requests.get(url, headers=_headers(), params=params, timeout=REQUEST_TIMEOUT)
+    response.raise_for_status()
+    open_orders = response.json()
+    cancelled = []
+    for o in open_orders:
+        del_response = requests.delete(f"{url}/{o['id']}", headers=_headers(), timeout=REQUEST_TIMEOUT)
+        cancelled.append({"order_id": o["id"], "status_code": del_response.status_code})
+    return {"cancelled_orders": cancelled}
 
 
 def cancel_all_orders():

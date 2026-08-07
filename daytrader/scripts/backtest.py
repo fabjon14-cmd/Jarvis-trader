@@ -29,8 +29,8 @@ SLOW_EMA_PERIOD = research.SLOW_EMA_PERIOD
 RSI_PERIOD = research.RSI_PERIOD
 RSI_ENTRY_MIN = research.RSI_ENTRY_MIN
 RSI_ENTRY_MAX = research.RSI_ENTRY_MAX
-STOP_LOSS_PCT = research.STOP_LOSS_PCT
-TAKE_PROFIT_PCT = research.TAKE_PROFIT_PCT
+ATR_PERIOD = research.ATR_PERIOD
+ATR_SMA_PERIOD = research.ATR_SMA_PERIOD
 
 INDICATOR_WINDOW = 150  # rolling lookback used to (re)compute indicators at each step
 
@@ -71,14 +71,21 @@ def _bar_date(bar):
     return bar["t"][:10]
 
 
+def _bar_datetime_utc(bar):
+    return datetime.strptime(bar["t"][:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+
+
 def simulate_symbol(symbol, bars):
-    """Long-only. Enters on a fresh EMA9>EMA21 cross with RSI in-band; exits
-    on the opposite crossunder, stop-loss, take-profit, or end of that
-    trading day (mirrors the live agent's forced EOD flatten — an intraday
-    strategy should never carry a simulated position into the next day's
-    gap). No look-ahead: bar i's decision only ever sees bars[0..i]."""
+    """Long-only. Enters on a fresh EMA9>EMA21 cross with RSI in-band, ATR
+    above its own 20-period average, and inside an entry-window time of
+    day; exits on the opposite crossunder, ATR-based stop/take-profit, or
+    end of that trading day (mirrors the live agent's forced EOD flatten —
+    an intraday strategy should never carry a simulated position into the
+    next day's gap). No look-ahead: bar i's decision only ever sees
+    bars[0..i]. Mirrors research.get_signal() exactly — see CLAUDE.md
+    'ATR-based stop/take-profit' and 'Time-of-day filter'."""
     trades = []
-    position = None  # {"entry_price", "entry_index", "entry_date"}
+    position = None  # {"entry_price", "entry_time", "stop_price", "tp_price"}
 
     for i in range(SLOW_EMA_PERIOD + 2, len(bars)):
         window = bars[max(0, i - INDICATOR_WINDOW + 1):i + 1]
@@ -89,24 +96,28 @@ def simulate_symbol(symbol, bars):
         fast_ema = research.compute_ema_series(closes, FAST_EMA_PERIOD)
         slow_ema = research.compute_ema_series(closes, SLOW_EMA_PERIOD)
         rsi_series = research.compute_rsi_series(closes, RSI_PERIOD)
-        if len(fast_ema) < 2 or len(slow_ema) < 2 or not rsi_series:
+        atr_series = research.compute_atr_series(window, ATR_PERIOD)
+        if len(fast_ema) < 2 or len(slow_ema) < 2 or not rsi_series or len(atr_series) < ATR_SMA_PERIOD:
             continue
 
         prev_fast, curr_fast = fast_ema[-2], fast_ema[-1]
         prev_slow, curr_slow = slow_ema[-2], slow_ema[-1]
         curr_rsi = rsi_series[-1]
+        curr_atr = atr_series[-1]
+        atr_sma = sum(atr_series[-ATR_SMA_PERIOD:]) / ATR_SMA_PERIOD
         crossed_above = prev_fast <= prev_slow and curr_fast > curr_slow
         crossed_below = prev_fast >= prev_slow and curr_fast < curr_slow
         rsi_in_band = RSI_ENTRY_MIN <= curr_rsi <= RSI_ENTRY_MAX
+        atr_above_average = curr_atr > atr_sma
 
         bar = bars[i]
         is_last_bar_of_day = (i == len(bars) - 1) or (_bar_date(bars[i + 1]) != _bar_date(bar))
+        in_entry_window = research.is_in_entry_window(_bar_datetime_utc(bar))
 
         if position is not None:
             entry_price = position["entry_price"]
-            change_pct = (bar["c"] - entry_price) / entry_price * 100
-            stop_price = entry_price * (1 - STOP_LOSS_PCT / 100)
-            tp_price = entry_price * (1 + TAKE_PROFIT_PCT / 100)
+            stop_price = position["stop_price"]
+            tp_price = position["tp_price"]
             exit_reason, exit_price = None, None
 
             # Same bar could touch both SL and TP — conservatively assume
@@ -135,8 +146,9 @@ def simulate_symbol(symbol, bars):
                 position = None
                 continue  # don't re-enter on the same bar we just exited
 
-        if position is None and not is_last_bar_of_day and crossed_above and rsi_in_band:
-            position = {"entry_price": bar["c"], "entry_time": bar["t"]}
+        if position is None and not is_last_bar_of_day and crossed_above and rsi_in_band and atr_above_average and in_entry_window:
+            stop_price, tp_price = research.compute_atr_based_stop_tp(bar["c"], curr_atr)
+            position = {"entry_price": bar["c"], "entry_time": bar["t"], "stop_price": stop_price, "tp_price": tp_price}
 
     return trades
 
@@ -190,30 +202,13 @@ def detail_symbol(symbol, lookback_days=30, end_days_ago=0):
     return {"symbol": symbol, "bars_fetched": len(bars), "trades": trades}
 
 
-def compute_atr_series(bars, period=14):
-    """Wilder-smoothed ATR, same formula as the crypto scalper's. Used only
-    to sanity-check a proposed ATR-based sizing formula against real data
-    before it's built into the live agent — see atr_check() below."""
-    if len(bars) < period + 2:
-        return []
-    trs = []
-    for i in range(1, len(bars)):
-        high, low, prev_close = bars[i]["h"], bars[i]["l"], bars[i - 1]["c"]
-        trs.append(max(high - low, abs(high - prev_close), abs(low - prev_close)))
-    if len(trs) < period:
-        return []
-    atr = [sum(trs[:period]) / period]
-    for tr in trs[period:]:
-        atr.append((atr[-1] * (period - 1) + tr) / period)
-    return atr
-
-
 def atr_check(lookback_days=5):
-    """For every watchlist symbol: current 5-min ATR(14), and what
-    Shares = (account_balance * 0.01) / (1.5 * ATR) would actually size a
-    position to, as a percentage of account balance — using a nominal
-    $100,000 balance (Alpaca's standard paper default) since this doesn't
-    depend on the actual account size, only on price/ATR ratio."""
+    """Historical record of the check that caught the original ATR-sizing
+    proposal blowing up to 200-650% of account per trade (see CLAUDE.md
+    'Why position sizing stays decoupled from the ATR stop'). Kept as a
+    standing diagnostic — shows current ATR and what a (deliberately not
+    used) risk-distance-based sizing formula would produce, as a sanity
+    check if that formula is ever reconsidered."""
     with open(os.path.join(os.path.dirname(__file__), "..", "watchlist.json")) as f:
         symbols = json.load(f)["symbols"]
     nominal_balance = 100000
@@ -221,23 +216,23 @@ def atr_check(lookback_days=5):
     for symbol in symbols:
         bars = fetch_historical_bars(symbol, lookback_days=lookback_days)
         closes = [b["c"] for b in bars]
-        atr_series = compute_atr_series(bars, period=14)
+        atr_series = research.compute_atr_series(bars, period=ATR_PERIOD)
         if not atr_series or not closes:
             results.append({"symbol": symbol, "error": "insufficient bars"})
             continue
         current_atr = atr_series[-1]
         last_price = closes[-1]
-        stop_distance = 1.5 * current_atr
-        shares = (nominal_balance * 0.01) / stop_distance
-        notional = shares * last_price
+        stop_distance = research.ATR_STOP_MULTIPLIER * current_atr
+        shares_if_risk_coupled = (nominal_balance * 0.01) / stop_distance
+        notional_if_risk_coupled = shares_if_risk_coupled * last_price
         results.append({
             "symbol": symbol,
             "last_price": round(last_price, 2),
             "atr14_5min": round(current_atr, 4),
             "atr_as_pct_of_price": round(current_atr / last_price * 100, 3),
-            "shares_at_nominal_100k": round(shares, 1),
-            "notional": round(notional, 2),
-            "notional_as_pct_of_account": round(notional / nominal_balance * 100, 1),
+            "shares_if_risk_coupled_to_atr_stop": round(shares_if_risk_coupled, 1),
+            "notional_if_risk_coupled_to_atr_stop": round(notional_if_risk_coupled, 2),
+            "notional_as_pct_of_account_if_risk_coupled": round(notional_if_risk_coupled / nominal_balance * 100, 1),
         })
     return results
 

@@ -22,11 +22,14 @@ import os
 import sys
 import json
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import requests
 from dotenv import load_dotenv
 
 load_dotenv()
+
+EASTERN = ZoneInfo("US/Eastern")
 
 ALPACA_KEY = os.getenv("DAYTRADER_APCA_API_KEY_ID")
 ALPACA_SECRET = os.getenv("DAYTRADER_APCA_API_SECRET_KEY")
@@ -42,13 +45,64 @@ RSI_PERIOD = int(os.getenv("DAYTRADER_RSI_PERIOD", "14"))
 RSI_ENTRY_MIN = float(os.getenv("DAYTRADER_RSI_ENTRY_MIN", "40"))
 RSI_ENTRY_MAX = float(os.getenv("DAYTRADER_RSI_ENTRY_MAX", "65"))
 
+# ATR-based stop/take-profit (replaced the flat STOP_LOSS_PCT/TAKE_PROFIT_PCT
+# below on 2026-08-07 — see CLAUDE.md "ATR-based stop/take-profit"). A flat
+# percentage doesn't account for each stock's own volatility; sizing the
+# stop/TP off that pair's actual 5-min ATR at entry time does, same fix the
+# crypto scalper already needed for the same reason.
+ATR_PERIOD = int(os.getenv("DAYTRADER_ATR_PERIOD", "14"))
+ATR_STOP_MULTIPLIER = float(os.getenv("DAYTRADER_ATR_STOP_MULTIPLIER", "1.5"))
+ATR_TP_MULTIPLIER = float(os.getenv("DAYTRADER_ATR_TP_MULTIPLIER", "3.0"))
+# ATR volatility filter (added 2026-08-07): only trade when the current
+# bar's ATR is strictly above its own 20-period SMA — i.e. only in
+# above-average-movement conditions. Targets the whipsaw problem found in
+# the first backtest directly: most losing trades exited via the opposite
+# crossover (a small reversal), not the stop-loss, meaning most losses came
+# from trading in flat/choppy stretches where the EMA cross had nothing
+# real behind it. This is the OPPOSITE condition from the crypto scalper's
+# ATR spike filter (which BLOCKS trades above a volatility threshold,
+# because its RSI-oversold signal gets unreliable during a shock) — that
+# filter exists to avoid trading during a spike; this one exists to avoid
+# trading during the absence of one. Different strategy, different reason,
+# not a contradiction.
+ATR_SMA_PERIOD = int(os.getenv("DAYTRADER_ATR_SMA_PERIOD", "20"))
+
+# Flat fallbacks — no longer the operative stop/TP (see ATR-based sizing
+# above), kept only for any position opened before this change with no
+# recoverable ATR-based levels.
 STOP_LOSS_PCT = float(os.getenv("DAYTRADER_STOP_LOSS_PCT", "1.0"))
 TAKE_PROFIT_PCT = float(os.getenv("DAYTRADER_TAKE_PROFIT_PCT", "2.0"))
 # "Risk a maximum of 1% of the total account balance per trade" — a
 # position-size cap, not a stop-distance-scaled dollar-risk target. See
-# CLAUDE.md "Position sizing" for why this matters.
+# CLAUDE.md "Position sizing" for why this matters. Deliberately NOT tied
+# to the ATR-based stop distance above — see CLAUDE.md "Why position
+# sizing stays decoupled from the ATR stop" for why coupling them (as
+# originally proposed) blows up to 200-650% of account per trade.
 PER_TRADE_PCT_CAP = float(os.getenv("DAYTRADER_PER_TRADE_PCT_CAP", "1.0"))
 DAILY_DRAWDOWN_LIMIT_PCT = float(os.getenv("DAYTRADER_DAILY_DRAWDOWN_LIMIT_PCT", "3.0"))
+
+# Time-of-day filter (added 2026-08-07): new entries only inside these two
+# US/Eastern windows — the opening-range chop (9:30-9:45) and the midday
+# lull (11:30-15:00) are excluded entirely, leaving the post-opening-range
+# morning trend window and a narrow pre-close window. Exits are never
+# gated by this — same "a filter only blocks new buys, never a mandatory
+# exit" convention as every other gate in this project.
+ENTRY_WINDOWS_ET = [
+    ((9, 45), (11, 30)),
+    ((15, 0), (15, 45)),
+]
+
+
+def is_in_entry_window(dt_utc):
+    """True if dt_utc (a timezone-aware UTC datetime) falls within one of
+    ENTRY_WINDOWS_ET, converted to US/Eastern (handles EDT/EST correctly,
+    unlike a fixed UTC offset)."""
+    et = dt_utc.astimezone(EASTERN)
+    minutes = et.hour * 60 + et.minute
+    for (start_h, start_m), (end_h, end_m) in ENTRY_WINDOWS_ET:
+        if start_h * 60 + start_m <= minutes <= end_h * 60 + end_m:
+            return True
+    return False
 
 
 def _headers():
@@ -166,7 +220,7 @@ def compute_ema_series(closes, period):
     return ema
 
 
-def get_signal(symbol, timeframe="5Min", limit=150):
+def get_signal(symbol, timeframe="5Min", limit=150, now=None):
     """Buy signal — ALL of:
     - Fast EMA(9) crosses above Slow EMA(21) THIS bar (previous bar's
       fast<=slow, this bar's fast>slow) — a cross event, not a level check
@@ -176,14 +230,19 @@ def get_signal(symbol, timeframe="5Min", limit=150):
       the same bar — a trend-continuation filter, not a reversal trigger;
       unlike the crypto scalper's RSI-oversold gate, this one is deliberately
       NOT an extreme reading, so there's no same-bar-conflict with the EMA
-      cross the way there was for crypto (see crypto-scalper/CLAUDE.md
-      "Multi-timeframe trend filter" for that unrelated problem — it doesn't
-      apply here since this signal isn't an oversold-reversal bet).
+      cross the way there was for crypto.
+    - ATR(14) is strictly above its own 20-period SMA (added 2026-08-07) —
+      only trade in above-average-movement conditions. See ATR_SMA_PERIOD
+      above for why.
+    - Current time (US/Eastern) falls in one of ENTRY_WINDOWS_ET (added
+      2026-08-07). `now` defaults to the real current time; the backtest
+      passes each historical bar's own timestamp instead, so the exact
+      same rule replays correctly against history.
     All computed on the same 5-minute timeframe (no multi-timeframe filter
     here, unlike the crypto scalper) — deliberately kept close to what was
-    specified rather than added complexity that wasn't asked for. Revisit if
-    backtesting surfaces a reason to add one.
+    specified rather than added complexity that wasn't asked for.
     """
+    now = now or datetime.now(timezone.utc)
     bars = get_bars(symbol, timeframe=timeframe, limit=limit)
     closes = [b["c"] for b in bars]
     if len(closes) < SLOW_EMA_PERIOD + 2:
@@ -192,28 +251,74 @@ def get_signal(symbol, timeframe="5Min", limit=150):
     fast_ema = compute_ema_series(closes, FAST_EMA_PERIOD)
     slow_ema = compute_ema_series(closes, SLOW_EMA_PERIOD)
     rsi_series = compute_rsi_series(closes, RSI_PERIOD)
+    atr_series = compute_atr_series(bars, ATR_PERIOD)
 
     if len(fast_ema) < 2 or len(slow_ema) < 2 or not rsi_series:
         return {"symbol": symbol, "error": "insufficient bars for indicators", "buy_signal": False}
+    if len(atr_series) < ATR_SMA_PERIOD:
+        return {"symbol": symbol, "error": "insufficient bars for ATR filter", "buy_signal": False}
 
     prev_fast, curr_fast = fast_ema[-2], fast_ema[-1]
     prev_slow, curr_slow = slow_ema[-2], slow_ema[-1]
     curr_rsi = rsi_series[-1]
+    curr_atr = atr_series[-1]
+    atr_sma = sum(atr_series[-ATR_SMA_PERIOD:]) / ATR_SMA_PERIOD
 
     crossed_above = prev_fast <= prev_slow and curr_fast > curr_slow
     rsi_in_band = RSI_ENTRY_MIN <= curr_rsi <= RSI_ENTRY_MAX
-    buy_signal = crossed_above and rsi_in_band
+    atr_above_average = curr_atr > atr_sma
+    in_entry_window = is_in_entry_window(now)
+    buy_signal = crossed_above and rsi_in_band and atr_above_average and in_entry_window
+
+    entry_price = closes[-1]
+    stop_price, tp_price = compute_atr_based_stop_tp(entry_price, curr_atr)
 
     return {
         "symbol": symbol,
         "buy_signal": buy_signal,
-        "last_price": closes[-1],
+        "last_price": entry_price,
         "fast_ema9": round(curr_fast, 4),
         "slow_ema21": round(curr_slow, 4),
         "crossed_above": crossed_above,
         "rsi14": round(curr_rsi, 2),
         "rsi_in_band": rsi_in_band,
+        "atr14": round(curr_atr, 4),
+        "atr_sma20": round(atr_sma, 4),
+        "atr_above_average": atr_above_average,
+        "in_entry_window": in_entry_window,
+        "stop_price": round(stop_price, 2),
+        "tp_price": round(tp_price, 2),
     }
+
+
+def compute_atr_series(bars, period=14):
+    """Wilder-smoothed ATR(14) from OHLC bars — same formula as the crypto
+    scalper's. atr[-1] corresponds to bars[-1] (needs one fewer element
+    than `bars` for true range, then `period` more to seed Wilder
+    smoothing), same alignment convention as compute_ema_series /
+    compute_rsi_series above."""
+    if len(bars) < period + 2:
+        return []
+    trs = []
+    for i in range(1, len(bars)):
+        high, low, prev_close = bars[i]["h"], bars[i]["l"], bars[i - 1]["c"]
+        trs.append(max(high - low, abs(high - prev_close), abs(low - prev_close)))
+    if len(trs) < period:
+        return []
+    atr = [sum(trs[:period]) / period]
+    for tr in trs[period:]:
+        atr.append((atr[-1] * (period - 1) + tr) / period)
+    return atr
+
+
+def compute_atr_based_stop_tp(entry_price, atr14):
+    """Absolute stop/take-profit prices from that pair's own ATR at entry
+    time — ATR_STOP_MULTIPLIER (default 1.5x) / ATR_TP_MULTIPLIER (default
+    3.0x), preserving a 1:2 risk:reward ratio. Long-only, so stop is below
+    entry and TP is above it. Returns (stop_price, tp_price)."""
+    stop_price = entry_price - (ATR_STOP_MULTIPLIER * atr14)
+    tp_price = entry_price + (ATR_TP_MULTIPLIER * atr14)
+    return stop_price, tp_price
 
 
 def get_exit_crossunder(symbol, timeframe="5Min", limit=150):

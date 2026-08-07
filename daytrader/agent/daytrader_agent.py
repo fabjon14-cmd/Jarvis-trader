@@ -96,20 +96,21 @@ def run():
         _append_journal([f"Could not fetch positions ({e}) — holding entire run."], [])
         return
 
-    # --- Exits first: forced flatten, then stop-loss / take-profit / opposite crossover ---
+    # --- Exits first: forced flatten, then opposite crossover. Stop-loss
+    # and take-profit are now handled by the broker directly (see CLAUDE.md
+    # "Bracket orders") — every new entry is placed as a bracket order with
+    # SL/TP legs attached, so those two exits fire immediately on a real
+    # price cross instead of waiting for this agent's next 5-minute poll.
+    # This loop only needs to handle the two exits a bracket order can't
+    # express: a signal reversal, and the forced end-of-day flatten. ---
     for symbol, pos in positions.items():
         entry_price = float(pos["avg_entry_price"])
         qty = pos["qty"]
-        last_price = float(pos.get("current_price") or entry_price)
         unrealized_plpc = float(pos.get("unrealized_plpc", 0)) * 100
 
         exit_reason = None
         if force_flatten:
             exit_reason = "eod_flatten"
-        elif unrealized_plpc <= -research.STOP_LOSS_PCT:
-            exit_reason = "stop_loss"
-        elif unrealized_plpc >= research.TAKE_PROFIT_PCT:
-            exit_reason = "take_profit"
         else:
             try:
                 if research.get_exit_crossunder(symbol):
@@ -119,12 +120,18 @@ def run():
                 continue
 
         if exit_reason:
-            use_market = exit_reason in ("stop_loss", "eod_flatten")
+            # Cancel the bracket's still-resting SL/TP legs first — an
+            # un-cancelled child order would hold qty against this sell,
+            # since Alpaca doesn't know this exit supersedes the bracket.
+            cancel_result = trade.cancel_symbol_orders(symbol)
+            last_price = float(pos.get("current_price") or entry_price)
+            use_market = exit_reason == "eod_flatten"
             limit_price = None if use_market else round(last_price * (1 - LIMIT_SLIPPAGE_BUFFER), 2)
             result = trade.place_order(symbol, qty, "sell", limit_price=limit_price, market=use_market)
-            lines.append(f"{symbol}: CLOSE ({exit_reason}, unrealized_plpc={unrealized_plpc:.2f}%) -> {result}")
+            n_cancelled = len(cancel_result.get("cancelled_orders", []))
+            lines.append(f"{symbol}: CLOSE ({exit_reason}, unrealized_plpc={unrealized_plpc:.2f}%, cancelled {n_cancelled} bracket leg(s)) -> {result}")
         else:
-            lines.append(f"{symbol}: hold open position (unrealized_plpc={unrealized_plpc:.2f}%)")
+            lines.append(f"{symbol}: hold open position (unrealized_plpc={unrealized_plpc:.2f}% — stop/take-profit managed by the broker-side bracket order)")
 
     if force_flatten:
         lines.append(f"Within {EOD_FLATTEN_MINUTES} min of close — new-entry evaluation skipped this run.")
@@ -179,6 +186,10 @@ def run():
                 reason.append("no fresh EMA9>EMA21 cross")
             if not signal["rsi_in_band"]:
                 reason.append(f"rsi14={signal['rsi14']} outside [{research.RSI_ENTRY_MIN},{research.RSI_ENTRY_MAX}]")
+            if not signal["atr_above_average"]:
+                reason.append(f"atr14={signal['atr14']} <= atr_sma20={signal['atr_sma20']} (below-average movement)")
+            if not signal["in_entry_window"]:
+                reason.append("outside entry window (9:45-11:30 or 15:00-15:45 ET)")
             lines.append(f"{symbol}: hold — {', '.join(reason)}.")
             envelopes.append(envelope)
             continue
@@ -213,7 +224,11 @@ def run():
             continue
 
         limit_price = round(entry_price * (1 + LIMIT_SLIPPAGE_BUFFER), 2)
-        result = trade.place_order(symbol, qty, "buy", limit_price=limit_price)
+        # ATR-based stop/TP prices, computed in get_signal from that
+        # symbol's own current ATR — see CLAUDE.md "ATR-based stop/
+        # take-profit". Submitted as a bracket order so the broker manages
+        # the actual exit, not this agent's 5-minute poll.
+        result = trade.place_bracket_order(symbol, qty, limit_price, signal["stop_price"], signal["tp_price"])
         envelope["action"] = "NEW_TRADE"
         envelope["position_sizing"] = {
             "per_trade_pct_cap": research.PER_TRADE_PCT_CAP,
@@ -222,9 +237,10 @@ def run():
             "binding_constraint": binding,
             "qty": qty,
         }
+        envelope["bracket"] = {"stop_price": signal["stop_price"], "tp_price": signal["tp_price"], "atr14": signal["atr14"]}
         envelope["order_result"] = result
         envelopes.append(envelope)
-        lines.append(f"{symbol}: NEW_TRADE qty={qty} @ ~{limit_price} (rsi14={signal['rsi14']}, binding={binding}) -> {result}")
+        lines.append(f"{symbol}: NEW_TRADE qty={qty} @ ~{limit_price}, bracket SL={signal['stop_price']}/TP={signal['tp_price']} (rsi14={signal['rsi14']}, binding={binding}) -> {result}")
 
         if result.get("placed"):
             open_count += 1

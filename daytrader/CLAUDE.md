@@ -176,6 +176,120 @@ binds, logged per trade as `binding_constraint` in the `NEW_TRADE`
 journal entry (`per_trade_pct_cap` or `max_order_notional`), so it's
 answerable from the journal which one governed a given trade's size.
 
+## ATR-based stop/take-profit (2026-08-07, operator's suggestion)
+
+Replaced the flat `-1.0%` / `+2.0%` stop/take-profit with each trade's own
+5-minute ATR(14) at entry time — `ATR_STOP_MULTIPLIER` (1.5x) /
+`ATR_TP_MULTIPLIER` (3.0x), preserving the original 1:2 risk:reward
+ratio. Same fix the crypto scalper already needed for the same reason: a
+flat percentage doesn't account for the fact that different stocks (and
+the same stock at different times) have different natural volatility —
+sizing the stop/TP off that pair's own recent movement means a calmer
+stock gets a tighter stop and a choppier one gets more room, instead of
+the same distance regardless.
+
+`research.compute_atr_based_stop_tp(entry_price, atr14)` computes this;
+`get_signal()` returns `stop_price`/`tp_price` alongside the rest of the
+technical validation so the agent can submit them directly on the bracket
+order (see below) without a second lookup.
+
+## Why position sizing stays decoupled from the ATR stop
+
+The operator's initial proposal combined this with position sizing —
+`Shares = (Balance × 0.01) / (1.5 × ATR)` — which was checked against
+real market data before building it (`scripts/backtest.py atr-check`,
+still in the repo as a standing diagnostic) and found to blow up the same
+way the original flat-percentage risk formula did, only worse:
+
+| Symbol | ATR as % of price | Notional this formula produces |
+|---|---|---|
+| AAPL | 0.12% | 578% of account |
+| JPM | 0.11% | 618% of account |
+| V | 0.10% | 650% of account |
+| AMD (most volatile tested) | 0.35% | 192% of account |
+
+Every symbol came out between 192% and 650% of the account on one trade
+— worse than the original "risk 1% + 1% stop = 100% of account" bug,
+because a 5-minute ATR is *always* a small fraction of price (here,
+0.1-0.35%), and `shares = risk_$ / stop_distance` blows up whenever the
+stop distance is small relative to price. Coupling risk-target sizing to
+a tight, volatility-derived stop distance makes the blowup worse, not
+better.
+
+**The fix keeps the two decisions independent**, same principle as the
+"Position sizing" section above: `research.compute_position_qty()` (flat
+1% of account balance ÷ price) decides *how many shares*; the ATR-based
+stop/TP above decides *where the exit prices sit*. Neither one is derived
+from the other. If the position-sizing cap is ever raised well past 1%,
+re-run `atr-check` before trusting the new number — the blowup shown
+above is inherent to the risk/stop-distance formula, not specific to 1%.
+
+## Bracket orders (2026-08-07, operator's suggestion)
+
+New entries are now submitted as Alpaca `order_class: "bracket"` orders
+— the entry limit order plus the ATR-based stop-loss and take-profit as
+broker-managed child legs, via `trade.place_bracket_order()`. This is a
+real execution-quality improvement over the original design: a stop or
+TP now fires immediately when the broker sees a matching price, not only
+when this agent happens to poll again (up to 5 minutes later). Shares
+the exact same duplicate-order check and buy-side caps as a plain order
+(`_check_buy_allowed()`, factored out so the two order paths can't drift
+apart).
+
+**The wrinkle**: the strategy also exits on the opposite EMA crossover
+and the forced end-of-day flatten, neither of which is a price level a
+bracket order can express — those two exits still require this agent's
+5-minute poll. When either fires, `trade.cancel_symbol_orders()` cancels
+the bracket's still-resting SL/TP legs *before* the manual sell is
+submitted — otherwise the resting child orders would hold qty against
+(or conflict with) the manual exit, since Alpaca has no way to know a
+signal-based exit supersedes the bracket. `agent/daytrader_agent.py`'s
+exit loop no longer checks `unrealized_plpc` against stop/TP thresholds
+at all — those two paths are entirely broker-managed now; the loop only
+handles the two exits a bracket can't do.
+
+## ATR volatility filter (2026-08-07, operator's suggestion)
+
+Added to `get_signal()`'s buy conditions: the current bar's ATR(14) must
+be strictly greater than its own 20-period SMA (`ATR_SMA_PERIOD`) — only
+trade in above-average-movement conditions. This directly targets what
+the first backtest's exit-reason breakdown showed: most losing trades
+exited via `opposite_crossover` (a small reversal, avg -0.17%) rather
+than the hard stop (avg -1.0%), meaning most losses were whipsaws from
+trading a fast EMA cross during flat, directionless stretches where
+there was no real trend to catch. Requiring above-average ATR is meant to
+filter those stretches out.
+
+Note this is the **opposite condition** from the crypto scalper's ATR
+spike filter, which *blocks* trades above a volatility threshold (because
+its RSI-oversold reversal signal gets unreliable during a shock). Not a
+contradiction — different strategy, different failure mode: crypto's
+signal breaks when volatility spikes; this one's breaks when volatility
+is absent.
+
+## Time-of-day filter (2026-08-07, operator's suggestion)
+
+New entries restricted to two US/Eastern windows: **9:45-11:30** (skips
+the 9:30-9:45 opening-range chop) and **15:00-15:45** (a narrow pre-close
+window, skips both the midday 11:30-15:00 lull and the final 15:45-16:00
+close-out scramble). `research.is_in_entry_window()` converts via
+`zoneinfo.ZoneInfo("US/Eastern")` (correct across EDT/EST, unlike a fixed
+UTC offset) — used identically by the live agent (real current time) and
+the backtest (each historical bar's own timestamp), so the exact same
+rule replays against history rather than an approximation of it.
+
+**Entries only** — same "a filter blocks new buys, never a mandatory
+exit" convention as every other gate in this project (circuit breaker,
+daily notional cap, etc.). A position already open can still exit via
+crossover or forced flatten at any time of day.
+
+## Backtest re-run after all five of the above (2026-08-07)
+
+See the top banner for the updated 6-window results after ATR-based
+stop/TP, decoupled sizing, bracket orders (execution-quality only, not
+backtestable as a distinct effect), the ATR volatility filter, and the
+time-of-day filter were all added together.
+
 ## Caps added beyond the original spec (2026-08-07)
 
 The operator's spec listed position sizing, stop-loss, take-profit, and a

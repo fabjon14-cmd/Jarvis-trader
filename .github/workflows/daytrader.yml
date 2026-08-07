@@ -58,6 +58,13 @@ jobs:
         run: python3 daytrader/agent/daytrader_agent.py
 
       - name: Commit journal update
+        # Retries push-with-rebase on a non-fast-forward rejection — found
+        # 2026-08-07 when two runs landed 16 seconds apart (now common
+        # with the self-hosted runner's fast, reliable start time) and the
+        # second one's plain `git push` was rejected because the first
+        # one's commit had already moved `main` forward. crypto-scalper.yml
+        # pushes to the same branch on its own independent schedule too,
+        # so this can also happen across workflows, not just within one.
         run: |
           git config user.name "daytrader-bot"
           git config user.email "actions@users.noreply.github.com"
@@ -66,5 +73,12 @@ jobs:
             echo "No journal changes to commit."
           else
             git commit -m "Day trader run $(date -u +'%Y-%m-%d %H:%M UTC')"
-            git push
+            for i in 1 2 3 4 5; do
+              if git push; then
+                break
+              fi
+              echo "Push rejected (attempt $i/5) — rebasing onto latest origin/main and retrying."
+              git pull --rebase origin main
+              sleep $((RANDOM % 5 + 1))
+            done
           fi

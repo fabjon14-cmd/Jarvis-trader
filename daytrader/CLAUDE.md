@@ -513,6 +513,30 @@ run URL every 5 minutes) but the resulting Actions runs still queue or
 start late (check `gh run list --workflow=daytrader.yml`). Check both
 logs, not just one, if timing looks off again.
 
+**Verified working**: watched the trigger log fire 3 consecutive times at
+16:50:42 / 16:55:44 / 17:00:47 UTC — consistent ~5-minute spacing, a real
+improvement over GitHub's 35+ minute silent gap earlier the same day.
+
+### Git push race surfaced by faster, more reliable firing
+
+One of those three verification runs (16:50:42) failed — not from
+anything above, but because it landed only 16 seconds after a manual
+test run, and its `git push` was rejected non-fast-forward since the
+other run's commit had already moved `main` forward. This is a
+pre-existing gap (the plain `git commit && git push` in "Commit journal
+update" never retried), just more likely to actually manifest now that
+firing is fast and reliable instead of randomly staggered by hosted-runner
+queue delays. It can also happen *across* workflows — crypto-scalper.yml
+pushes to the same `main` branch on its own independent schedule, with no
+shared concurrency group between the two.
+
+**Fixed**: the commit step now retries with `git pull --rebase origin
+main` on a rejected push (up to 5 attempts, short random backoff) instead
+of failing the job outright. `crypto-scalper.yml` has the identical
+pre-existing gap and needs the same fix — flagged as a separate follow-up
+rather than changed inline here, since that's a currently-live trading
+workflow this session wasn't otherwise touching.
+
 ## Setup notes
 
 - No separate credentials needed — `DAYTRADER_APCA_*` env vars are

@@ -471,6 +471,48 @@ dependency). `pip install --break-system-packages` is used for
 externally-managed (Homebrew/PEP 668) — a deliberate, narrow exception
 for two pinned, already-installed packages, not a general policy change.
 
+## Local launchd trigger (added 2026-08-07)
+
+The self-hosted runner (above) fixed *execution* delay — once a job is
+dispatched, it now starts in seconds. It did **not** fix a second,
+separate problem discovered the same day: GitHub's own `schedule:` cron
+*dispatch* went 35+ minutes without firing at all during market hours,
+with the self-hosted runner sitting idle and ready the entire time. This
+confirmed the two failure modes are independent — self-hosted vs. hosted
+runners only affects what happens *after* GitHub decides to fire the
+trigger, not whether/when it decides to fire it at all. GitHub's
+`schedule:` trigger is documented as best-effort with no reliability
+guarantee, and switching runner type doesn't touch that.
+
+**Fix**: removed the `schedule:` trigger from `daytrader.yml` entirely.
+Firing is now driven by a local launchd job on the operator's Mac —
+`~/Library/LaunchAgents/com.jarvis-trader.daytrader-trigger.plist`
+(`StartInterval: 300`, i.e. every 5 minutes, continuously) runs
+`~/actions-runner/trigger-daytrader.sh`, which calls `gh workflow run
+daytrader.yml --repo fabjon14-cmd/Jarvis-trader` (a `workflow_dispatch`
+call, not a `schedule` event). An OS-level launchd timer doesn't have
+GitHub's schedule-dispatch reliability problem — it's local, not
+dependent on a remote scheduler queue.
+
+**Fires 24/7, not just market hours** — deliberately not replicating
+market-hours/DST gating logic in launchd when the agent itself already
+does this correctly via `research.get_market_clock()` (holds cleanly
+with "Market closed" when appropriate, confirmed working in the very
+first live runs). Simpler and avoids a second place for market-hours
+logic to drift out of sync with the first. Logs:
+`~/actions-runner/trigger-daytrader.log` /
+`trigger-daytrader.err.log`.
+
+**This still depends on the Mac staying awake and online** — same
+requirement as the self-hosted runner above, now doing double duty (both
+the trigger and the execution depend on this machine). If it's the
+runner itself that's the deeper cause of unreliable timing rather than
+GitHub's scheduler specifically, that would show up as: launchd fires
+`gh workflow run` reliably (check the trigger log — should show a new
+run URL every 5 minutes) but the resulting Actions runs still queue or
+start late (check `gh run list --workflow=daytrader.yml`). Check both
+logs, not just one, if timing looks off again.
+
 ## Setup notes
 
 - No separate credentials needed — `DAYTRADER_APCA_*` env vars are

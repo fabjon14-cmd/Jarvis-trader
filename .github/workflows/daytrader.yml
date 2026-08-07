@@ -6,21 +6,25 @@ name: Day Trader
 # banner for the full result and its caveats before assuming this is a
 # long track record rather than one honest first test).
 #
-# Fires every 5 minutes, 13:00-21:59 UTC on weekdays — a superset covering
-# NYSE regular hours (9:30-16:00 ET) under both EDT and EST, so one cron
-# works year-round without a DST-dependent edit. The agent itself checks
-# Alpaca's own market clock every run and holds if the market is actually
-# closed (holidays, early closes) — the cron window is just a safe bound,
-# not the source of truth. workflow_dispatch stays enabled for manual runs.
+# No `schedule:` trigger (removed 2026-08-07) — GitHub's own cron dispatch
+# proved unreliable even beyond the runner-queueing problem below: it went
+# 35+ minutes without firing at all during market hours, with the
+# self-hosted runner sitting idle and ready. Firing is now driven by a
+# local launchd timer on the operator's Mac
+# (~/Library/LaunchAgents/com.jarvis-trader.daytrader-trigger.plist, every
+# 5 minutes, 24/7) that calls `gh workflow run daytrader.yml` — an OS-level
+# timer doesn't have GitHub's schedule-dispatch reliability problem. It
+# fires continuously, not just during market hours; the agent's own
+# market-clock check (see below) is what actually gates whether anything
+# happens, same as before. See daytrader/CLAUDE.md "Local launchd trigger".
 #
 # Runs on a self-hosted runner (added 2026-08-07) instead of GitHub's
-# hosted ubuntu-latest pool — the entire morning entry window was missed
-# on day one because GitHub's shared hosted runners are best-effort and
-# can queue for 15+ minutes under load (same issue already seen with the
-# crypto scalper's cron). See daytrader/CLAUDE.md "Self-hosted runner".
+# hosted ubuntu-latest pool — jobs now start in seconds once dispatched
+# instead of queueing 15+ minutes under load (same issue already seen
+# with the crypto scalper's cron). See daytrader/CLAUDE.md "Self-hosted
+# runner". This fixed execution delay, not trigger reliability — hence
+# the local launchd timer above for the trigger itself.
 on:
-  schedule:
-    - cron: "*/5 13-21 * * 1-5"
   workflow_dispatch: {}
 
 permissions:

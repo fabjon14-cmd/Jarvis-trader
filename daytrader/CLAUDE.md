@@ -417,6 +417,126 @@ negative; the re-test after the 5 filter/execution changes came back
 positive — see the top banner for both results and their caveats before
 treating this strategy as more validated than it is.
 
+## Self-hosted runner (added 2026-08-07)
+
+Day one of live trading exposed the same problem the crypto scalper's
+cron already had: GitHub's hosted `ubuntu-latest` runners are best-effort
+— the entire 9:45-11:30 ET morning entry window went by with **zero**
+runs firing (last run before it: 08:51 UTC; next run after it: 16:11
+UTC, well past the window's close). Confirmed the same day that even
+manually-triggered `workflow_dispatch` runs were sitting queued for 15+
+minutes before GitHub auto-cancelled them — this is a shared hosted-runner
+capacity issue, not a cron-syntax problem, so no amount of adjusting the
+schedule expression fixes it.
+
+**Fix**: `.github/workflows/daytrader.yml` and `daytrader-backtest.yml`
+now run on a self-hosted runner (`runs-on: [self-hosted, macOS,
+trading-bots]`) installed on the operator's own Mac
+(`~/actions-runner`), registered as a per-user LaunchAgent
+(`actions.runner.fabjon14-cmd-Jarvis-trader.jonathans-mac`) so it
+survives logout/reboot and starts automatically. Jobs now start
+immediately — no shared queue to wait in.
+
+**This trades one failure mode for another** — the bot now only fires
+when this specific Mac is powered on, awake, and connected. If it sleeps
+or loses network, the schedule goes fully silent with no GitHub-hosted
+fallback (worse than a delayed run, since a delayed run at least
+eventually happens). Keep this machine awake and online during market
+hours for the schedule to actually work as intended; verify awake/asleep
+history if a gap shows up in the journal that isn't explained by the
+entry-window filter.
+
+**Security note**: self-hosted runners on a *public* repository are a
+known risk mainly when a workflow can be triggered by outside
+contributors (e.g. `pull_request` from a fork) — a malicious PR could run
+arbitrary code on the runner's host machine. Neither `daytrader.yml` nor
+`daytrader-backtest.yml` has a `pull_request`-style trigger (only
+`schedule` and `workflow_dispatch`, the latter restricted to repo
+collaborators), so this specific attack vector doesn't apply here — but
+if any future workflow on this repo ever adds a `pull_request` trigger,
+it must NOT run on this self-hosted runner without separately addressing
+that risk (e.g. requiring approval for first-time contributors, which
+GitHub provides natively for exactly this reason).
+
+Runner packages verified against GitHub's published SHA-256 digest
+before installation (`actions-runner-osx-x64-2.336.0.tar.gz`,
+`sha256:f79c43...548fe`) — standard practice for a binary that runs
+persistently with repo-scoped credentials.
+
+**Dependencies**: this Mac's system Python (3.14) is used directly
+(no `actions/setup-python@v5` — unreliable on self-hosted runners without
+a pre-populated tool cache, and the codebase has no 3.11-specific
+dependency). `pip install --break-system-packages` is used for
+`requests`/`python-dotenv` since this Mac's Python is
+externally-managed (Homebrew/PEP 668) — a deliberate, narrow exception
+for two pinned, already-installed packages, not a general policy change.
+
+## Local launchd trigger (added 2026-08-07)
+
+The self-hosted runner (above) fixed *execution* delay — once a job is
+dispatched, it now starts in seconds. It did **not** fix a second,
+separate problem discovered the same day: GitHub's own `schedule:` cron
+*dispatch* went 35+ minutes without firing at all during market hours,
+with the self-hosted runner sitting idle and ready the entire time. This
+confirmed the two failure modes are independent — self-hosted vs. hosted
+runners only affects what happens *after* GitHub decides to fire the
+trigger, not whether/when it decides to fire it at all. GitHub's
+`schedule:` trigger is documented as best-effort with no reliability
+guarantee, and switching runner type doesn't touch that.
+
+**Fix**: removed the `schedule:` trigger from `daytrader.yml` entirely.
+Firing is now driven by a local launchd job on the operator's Mac —
+`~/Library/LaunchAgents/com.jarvis-trader.daytrader-trigger.plist`
+(`StartInterval: 300`, i.e. every 5 minutes, continuously) runs
+`~/actions-runner/trigger-daytrader.sh`, which calls `gh workflow run
+daytrader.yml --repo fabjon14-cmd/Jarvis-trader` (a `workflow_dispatch`
+call, not a `schedule` event). An OS-level launchd timer doesn't have
+GitHub's schedule-dispatch reliability problem — it's local, not
+dependent on a remote scheduler queue.
+
+**Fires 24/7, not just market hours** — deliberately not replicating
+market-hours/DST gating logic in launchd when the agent itself already
+does this correctly via `research.get_market_clock()` (holds cleanly
+with "Market closed" when appropriate, confirmed working in the very
+first live runs). Simpler and avoids a second place for market-hours
+logic to drift out of sync with the first. Logs:
+`~/actions-runner/trigger-daytrader.log` /
+`trigger-daytrader.err.log`.
+
+**This still depends on the Mac staying awake and online** — same
+requirement as the self-hosted runner above, now doing double duty (both
+the trigger and the execution depend on this machine). If it's the
+runner itself that's the deeper cause of unreliable timing rather than
+GitHub's scheduler specifically, that would show up as: launchd fires
+`gh workflow run` reliably (check the trigger log — should show a new
+run URL every 5 minutes) but the resulting Actions runs still queue or
+start late (check `gh run list --workflow=daytrader.yml`). Check both
+logs, not just one, if timing looks off again.
+
+**Verified working**: watched the trigger log fire 3 consecutive times at
+16:50:42 / 16:55:44 / 17:00:47 UTC — consistent ~5-minute spacing, a real
+improvement over GitHub's 35+ minute silent gap earlier the same day.
+
+### Git push race surfaced by faster, more reliable firing
+
+One of those three verification runs (16:50:42) failed — not from
+anything above, but because it landed only 16 seconds after a manual
+test run, and its `git push` was rejected non-fast-forward since the
+other run's commit had already moved `main` forward. This is a
+pre-existing gap (the plain `git commit && git push` in "Commit journal
+update" never retried), just more likely to actually manifest now that
+firing is fast and reliable instead of randomly staggered by hosted-runner
+queue delays. It can also happen *across* workflows — crypto-scalper.yml
+pushes to the same `main` branch on its own independent schedule, with no
+shared concurrency group between the two.
+
+**Fixed**: the commit step now retries with `git pull --rebase origin
+main` on a rejected push (up to 5 attempts, short random backoff) instead
+of failing the job outright. `crypto-scalper.yml` has the identical
+pre-existing gap and needs the same fix — flagged as a separate follow-up
+rather than changed inline here, since that's a currently-live trading
+workflow this session wasn't otherwise touching.
+
 ## Setup notes
 
 - No separate credentials needed — `DAYTRADER_APCA_*` env vars are

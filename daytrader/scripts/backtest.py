@@ -190,6 +190,24 @@ def detail_symbol(symbol, lookback_days=30, end_days_ago=0):
     return {"symbol": symbol, "bars_fetched": len(bars), "trades": trades}
 
 
+def spy_benchmark(lookback_days=30, end_days_ago=0):
+    """SPY buy-and-hold % change over the same window, for the same
+    'did the strategy beat just holding the market' comparison the crypto
+    scalper's backtest makes against BTC."""
+    bars = fetch_historical_bars("SPY", timeframe="1Day", lookback_days=lookback_days, end_days_ago=end_days_ago)
+    if len(bars) < 2:
+        return {"error": "insufficient SPY bars", "bars_fetched": len(bars)}
+    start_price, end_price = bars[0]["c"], bars[-1]["c"]
+    pct_change = (end_price - start_price) / start_price * 100
+    return {
+        "start_date": bars[0]["t"][:10],
+        "end_date": bars[-1]["t"][:10],
+        "start_price": start_price,
+        "end_price": end_price,
+        "pct_change": round(pct_change, 2),
+    }
+
+
 if __name__ == "__main__":
     action = sys.argv[1] if len(sys.argv) > 1 else None
 
@@ -197,6 +215,10 @@ if __name__ == "__main__":
         symbol = sys.argv[2]
         lookback = int(sys.argv[3]) if len(sys.argv) > 3 else 30
         print(json.dumps(detail_symbol(symbol, lookback_days=lookback), indent=2))
+    elif action == "benchmark":
+        lookback = int(sys.argv[2]) if len(sys.argv) > 2 else 30
+        end_days_ago = int(sys.argv[3]) if len(sys.argv) > 3 else 0
+        print(json.dumps(spy_benchmark(lookback_days=lookback, end_days_ago=end_days_ago), indent=2))
     else:
         lookback = int(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1].lstrip("-").isdigit() else 30
         end_days_ago = int(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2].lstrip("-").isdigit() else 0

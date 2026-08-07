@@ -19,6 +19,10 @@ on:
         description: "Optional: symbol to show full trade-by-trade detail for, instead of the aggregate report"
         required: false
         default: ""
+      benchmark:
+        description: "Set to 'spy' to report SPY buy-and-hold percent change over the window instead of running the strategy"
+        required: false
+        default: ""
 
 jobs:
   backtest:
@@ -47,6 +51,8 @@ jobs:
         run: |
           if [ -n "${{ github.event.inputs.detail_symbol }}" ]; then
             python3 daytrader/scripts/backtest.py detail "${{ github.event.inputs.detail_symbol }}" "${{ github.event.inputs.lookback_days || 30 }}"
+          elif [ "${{ github.event.inputs.benchmark }}" = "spy" ]; then
+            python3 daytrader/scripts/backtest.py benchmark "${{ github.event.inputs.lookback_days || 30 }}" "${{ github.event.inputs.end_days_ago || 0 }}"
           else
             python3 daytrader/scripts/backtest.py "${{ github.event.inputs.lookback_days || 30 }}" "${{ github.event.inputs.end_days_ago || 0 }}"
           fi

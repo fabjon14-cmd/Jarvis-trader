@@ -244,10 +244,14 @@ that's actually been done.
 - No separate credentials needed — `DAYTRADER_APCA_*` env vars are
   populated from the existing `CRYPTO_APCA_*` GitHub secrets at the
   workflow level (see "Sharing the crypto scalper's Alpaca account"
-  above). Requires that account to have equities trading enabled, not
-  just crypto — confirmed 2026-08-07 via `scripts/research.py account`
-  (Alpaca paper accounts support stocks by default; crypto is additive,
-  doesn't replace it).
+  above). Equities **market-data** access on this account was confirmed
+  2026-08-07 by actually fetching real AAPL 5-minute bars through it (342
+  bars, realistic prices) via `scripts/backtest.py`. Equities **order
+  placement** specifically has not been separately tested — Alpaca paper
+  accounts support stock trading by default (crypto is additive, doesn't
+  replace it), so this is expected to work, but the first real proof
+  point will be whenever this agent actually places a live order, gated
+  behind the backtest review either way.
 - `.github/workflows/daytrader.yml` has **no `schedule:` trigger yet** —
   `workflow_dispatch` only, deliberately, so this can't start live-trading
   (even on paper) the moment credentials exist. Add the schedule back in

@@ -537,6 +537,31 @@ pre-existing gap and needs the same fix — flagged as a separate follow-up
 rather than changed inline here, since that's a currently-live trading
 workflow this session wasn't otherwise touching.
 
+## Manual order-placement verification (added 2026-08-07)
+
+Every live run so far had been a hold — the strategy's actual entry
+conditions (EMA cross + RSI band + ATR-above-average + time-of-day
+window) hadn't fired yet, so equity order placement itself had never
+been proven to work on this account, only market-data access had (see
+"Setup notes" below). The operator asked to "let it trade" as a quick
+test; rather than loosening the time-of-day filter to force a real
+signal-driven trade — which the operator specified as strict, "bypass
+the signal logic completely" outside the windows — `scripts/test_order.py`
+was added instead: a one-off manual tool that places a single small
+bracket order directly, using a real ATR-derived stop/TP from
+`get_signal()`, but skipping the `buy_signal` gate entirely. This proves
+the same thing (does Alpaca accept an equity bracket order on this
+account, does it journal correctly) without weakening the tested
+strategy's rules even temporarily.
+
+Runs via `.github/workflows/daytrader-test-order.yml` —
+**`workflow_dispatch` only, never scheduled**, deliberately kept out of
+`daytrader.yml` so it can never fire automatically. Once placed, the
+resulting position is picked up and managed by the normal agent
+(crossunder exit / forced EOD flatten) exactly like a real strategy
+trade — this only bypasses the *entry* decision, not any of the
+position-management logic after that.
+
 ## Setup notes
 
 - No separate credentials needed — `DAYTRADER_APCA_*` env vars are

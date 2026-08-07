@@ -1,45 +1,76 @@
 # Day Trader — Project Notes
 
-## ⚠ Backtested 2026-08-07 — mixed/negative result, not enabled live
+## ⚠ Re-backtested 2026-08-07 after 5 filter/execution changes — now positive, still not enabled live
 
-6 independent, non-overlapping 30-day windows (180 calendar days,
-2,316 total simulated trades across the 12-symbol watchlist):
+**Original backtest** (flat -1%/+2% SL/TP, no ATR or time-of-day filter),
+6 independent 30-day windows, 2,316 total trades:
 
-| Window (days ago) | Total return | Trades | Win rate |
+| Window (days ago) | Return | Trades | Win rate |
 |---|---|---|---|
-| 0-30 (most recent) | +9.48% | 397 | 35.3% |
+| 0-30 | +9.48% | 397 | 35.3% |
 | 30-60 | -16.38% | 383 | 30.5% |
 | 60-90 | +0.10% | 382 | 34.6% |
 | 90-120 | +18.04% | 392 | 37.5% |
 | 120-150 | -26.36% | 350 | 27.7% |
 | 150-180 | -8.44% | 412 | 35.4% |
 
-**Average: -3.93%/window, 3 of 6 windows profitable.** SPY buy-and-hold
-over the same full 180-day span: **+10.76%** (≈+1.79%/30-day-window
-equivalent) — the strategy underperformed simply holding the market by a
-wide margin, and lost money outright in half the windows tested.
+Average -3.93%/window, 3/6 profitable — underperformed SPY buy-and-hold
+(+10.76% over the same 180 days, ≈+1.79%/window-equivalent) by a wide
+margin. Same shape of result as the crypto scalper's own study.
 
-This is the same shape of result as the crypto scalper's own multi-window
-study (see crypto-scalper/CLAUDE.md): a strategy that can look
-profitable in a given window (three of these six were) but has no
-demonstrated durable edge across independent windows, and loses to
-buy-and-hold on average. It is meaningfully *less bad* than the crypto
-scalper's finding (-3.93%/window here vs. -22.2%/window there, and 3/6
-profitable here vs. 1/8 there) — this is a genuinely different, weaker
-verdict, not "equally broken" — but it is still not a green light.
+**Re-run on the SAME 6 windows** after adding ATR-based stop/TP, decoupled
+position sizing, bracket orders, an ATR-above-average volatility filter,
+and a 9:45-11:30/15:00-15:45 ET time-of-day filter (see the sections
+below for each):
 
-**Not enabled for live trading as a result of this finding** — the
-`schedule:` trigger stays out of `.github/workflows/daytrader.yml` (see
-"Setup notes"). This is a decision point for the operator, same as the
-crypto scalper's pause/resume choice: run it live anyway as a deliberate,
-informed choice on paper money, revisit the entry/exit parameters (e.g.
-narrower RSI band, wider stop, a trend/regime filter), or leave it built
-but dormant. Not proceeding to live trading automatically either way
-without that explicit choice being made.
+| Window (days ago) | Return | Trades | Win rate |
+|---|---|---|---|
+| 0-30 | +3.34% | 73 | 39.7% |
+| 30-60 | +4.72% | 89 | 38.2% |
+| 60-90 | +6.13% | 72 | 43.1% |
+| 90-120 | +1.57% | 58 | 37.9% |
+| 120-150 | -0.49% | 80 | 35.0% |
+| 150-180 | +5.53% | 69 | 36.2% |
 
-Raw run history if you want to re-derive any of this: GitHub Actions runs
-31160917572 (window 0), 31160995335 (30), 31161057871 (60), 31161099402
-(90), 31161148010 (120), 31161186487 (150), 31161344324 (SPY benchmark).
+**Average +3.47%/window, 5 of 6 windows profitable** (the one loser was
+nearly flat, -0.49%) — now *beating* the SPY benchmark's
+≈+1.79%/window-equivalent, on 441 total trades (down from 2,316 — the
+filters cut volume roughly 5x while improving win rate on every single
+window). This is a real, substantial turnaround, not a marginal one.
+
+**Read before treating this as settled, though:**
+- **Five changes went in at once.** This confirms the *combination* has
+  a better historical result than the original spec — it does not tell
+  you which individual filter(s) are doing the work, or whether some
+  subset alone would do as well or better. Not isolated, because the
+  operator specified all five as one coherent hypothesis, not as
+  variants to compare — worth remembering if any one of them is changed
+  later, since there's no per-filter attribution to fall back on.
+- **Smaller per-window sample.** 58-89 trades per window here vs
+  350-412 before — more room for variance in any single window's number,
+  even though the *pattern* (positive in 5/6 independent windows) is
+  itself meaningful evidence, not a single lucky window.
+- **This is one parameter set, tested once, not tuned against these
+  windows.** Unlike the crypto scalper's ATR-multiplier search (which
+  tried several multiplier values and could be accused of picking the
+  one that happened to look best), these exact multipliers/thresholds
+  were the operator's stated hypothesis going in — this backtest is a
+  single honest test of that hypothesis across 6 independent windows,
+  not a search over configurations. That's a meaningfully cleaner
+  validation than a swept parameter, but it's still a first test, not a
+  long track record.
+
+**Still not enabled for live trading** — the `schedule:` trigger stays
+out of `.github/workflows/daytrader.yml` (see "Setup notes") pending an
+explicit operator decision, same checkpoint as before. The finding
+changed from "don't run this" to "this now looks genuinely promising,
+here's the honest caveats" — that's still a decision point, not an
+auto-green-light.
+
+Raw run history: original backtest — 31160917572, 31160995335,
+31161057871, 31161099402, 31161148010, 31161186487, SPY benchmark
+31161344324. Re-run after the 5 changes — 31162753956, 31162945744,
+31163003409, 31163059634, 31163115516, 31163168447.
 
 ---
 

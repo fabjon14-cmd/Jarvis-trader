@@ -28,20 +28,19 @@ on:
         required: false
         default: ""
 
+# Runs on the same self-hosted runner as daytrader.yml (added 2026-08-07)
+# — GitHub's hosted pool queued this workflow for 15+ minutes multiple
+# times during today's backtesting. See daytrader/CLAUDE.md "Self-hosted
+# runner".
 jobs:
   backtest:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, macOS, trading-bots]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
       - name: Install dependencies
-        run: pip install requests python-dotenv
+        run: python3 -m pip install --break-system-packages -q requests python-dotenv
 
       - name: Run backtest
         env:

@@ -12,6 +12,12 @@ name: Day Trader
 # Alpaca's own market clock every run and holds if the market is actually
 # closed (holidays, early closes) — the cron window is just a safe bound,
 # not the source of truth. workflow_dispatch stays enabled for manual runs.
+#
+# Runs on a self-hosted runner (added 2026-08-07) instead of GitHub's
+# hosted ubuntu-latest pool — the entire morning entry window was missed
+# on day one because GitHub's shared hosted runners are best-effort and
+# can queue for 15+ minutes under load (same issue already seen with the
+# crypto scalper's cron). See daytrader/CLAUDE.md "Self-hosted runner".
 on:
   schedule:
     - cron: "*/5 13-21 * * 1-5"
@@ -26,18 +32,13 @@ concurrency:
 
 jobs:
   run-daytrader:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, macOS, trading-bots]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
       - name: Install dependencies
-        run: pip install requests python-dotenv
+        run: python3 -m pip install --break-system-packages -q requests python-dotenv
 
       - name: Run daytrader agent
         env:

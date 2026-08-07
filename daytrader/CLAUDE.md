@@ -417,6 +417,60 @@ negative; the re-test after the 5 filter/execution changes came back
 positive — see the top banner for both results and their caveats before
 treating this strategy as more validated than it is.
 
+## Self-hosted runner (added 2026-08-07)
+
+Day one of live trading exposed the same problem the crypto scalper's
+cron already had: GitHub's hosted `ubuntu-latest` runners are best-effort
+— the entire 9:45-11:30 ET morning entry window went by with **zero**
+runs firing (last run before it: 08:51 UTC; next run after it: 16:11
+UTC, well past the window's close). Confirmed the same day that even
+manually-triggered `workflow_dispatch` runs were sitting queued for 15+
+minutes before GitHub auto-cancelled them — this is a shared hosted-runner
+capacity issue, not a cron-syntax problem, so no amount of adjusting the
+schedule expression fixes it.
+
+**Fix**: `.github/workflows/daytrader.yml` and `daytrader-backtest.yml`
+now run on a self-hosted runner (`runs-on: [self-hosted, macOS,
+trading-bots]`) installed on the operator's own Mac
+(`~/actions-runner`), registered as a per-user LaunchAgent
+(`actions.runner.fabjon14-cmd-Jarvis-trader.jonathans-mac`) so it
+survives logout/reboot and starts automatically. Jobs now start
+immediately — no shared queue to wait in.
+
+**This trades one failure mode for another** — the bot now only fires
+when this specific Mac is powered on, awake, and connected. If it sleeps
+or loses network, the schedule goes fully silent with no GitHub-hosted
+fallback (worse than a delayed run, since a delayed run at least
+eventually happens). Keep this machine awake and online during market
+hours for the schedule to actually work as intended; verify awake/asleep
+history if a gap shows up in the journal that isn't explained by the
+entry-window filter.
+
+**Security note**: self-hosted runners on a *public* repository are a
+known risk mainly when a workflow can be triggered by outside
+contributors (e.g. `pull_request` from a fork) — a malicious PR could run
+arbitrary code on the runner's host machine. Neither `daytrader.yml` nor
+`daytrader-backtest.yml` has a `pull_request`-style trigger (only
+`schedule` and `workflow_dispatch`, the latter restricted to repo
+collaborators), so this specific attack vector doesn't apply here — but
+if any future workflow on this repo ever adds a `pull_request` trigger,
+it must NOT run on this self-hosted runner without separately addressing
+that risk (e.g. requiring approval for first-time contributors, which
+GitHub provides natively for exactly this reason).
+
+Runner packages verified against GitHub's published SHA-256 digest
+before installation (`actions-runner-osx-x64-2.336.0.tar.gz`,
+`sha256:f79c43...548fe`) — standard practice for a binary that runs
+persistently with repo-scoped credentials.
+
+**Dependencies**: this Mac's system Python (3.14) is used directly
+(no `actions/setup-python@v5` — unreliable on self-hosted runners without
+a pre-populated tool cache, and the codebase has no 3.11-specific
+dependency). `pip install --break-system-packages` is used for
+`requests`/`python-dotenv` since this Mac's Python is
+externally-managed (Homebrew/PEP 668) — a deliberate, narrow exception
+for two pinned, already-installed packages, not a general policy change.
+
 ## Setup notes
 
 - No separate credentials needed — `DAYTRADER_APCA_*` env vars are

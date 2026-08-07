@@ -1,6 +1,6 @@
 # Day Trader — Project Notes
 
-## ⚠ Re-backtested 2026-08-07 after 5 filter/execution changes — now positive, still not enabled live
+## ⚠ Live since 2026-08-07 on the operator's explicit instruction, after this backtest
 
 **Original backtest** (flat -1%/+2% SL/TP, no ATR or time-of-day filter),
 6 independent 30-day windows, 2,316 total trades:
@@ -60,12 +60,19 @@ window). This is a real, substantial turnaround, not a marginal one.
   validation than a swept parameter, but it's still a first test, not a
   long track record.
 
-**Still not enabled for live trading** — the `schedule:` trigger stays
-out of `.github/workflows/daytrader.yml` (see "Setup notes") pending an
-explicit operator decision, same checkpoint as before. The finding
-changed from "don't run this" to "this now looks genuinely promising,
-here's the honest caveats" — that's still a decision point, not an
-auto-green-light.
+**Enabled for live (paper) trading 2026-08-07** — the operator was shown
+this exact result, including the three caveats above, and explicitly
+chose to enable it. The `schedule:` trigger is now live in
+`.github/workflows/daytrader.yml`. This is a deliberate, informed choice
+made with the numbers and caveats in front of the operator — not a
+default, and not a claim that the caveats above stopped mattering. If
+live results start to diverge meaningfully from this backtest, re-read
+this section before assuming the backtest was wrong rather than the live
+sample just being small so far.
+
+**To pause again:** remove the `schedule:` block from
+`.github/workflows/daytrader.yml` (revert to `workflow_dispatch` only) —
+`workflow_dispatch` stays available either way for manual runs/testing.
 
 Raw run history: original backtest — 31160917572, 31160995335,
 31161057871, 31161099402, 31161148010, 31161186487, SPY benchmark
@@ -405,8 +412,10 @@ banner for the full results table. The honest, evidence-backed standard
 this project holds itself to (see crypto-scalper/CLAUDE.md in full) is:
 don't trust a signal because the code runs cleanly; trust it because a
 real historical test, ideally across more than one window, says it has
-positive expected value. That test came back mixed/negative here — see
-the top banner before treating this strategy as validated.
+positive expected value. The original spec's test came back mixed/
+negative; the re-test after the 5 filter/execution changes came back
+positive — see the top banner for both results and their caveats before
+treating this strategy as more validated than it is.
 
 ## Setup notes
 
@@ -421,11 +430,9 @@ the top banner before treating this strategy as validated.
   replace it), so this is expected to work, but the first real proof
   point will be whenever this agent actually places a live order, gated
   behind the backtest review either way.
-- `.github/workflows/daytrader.yml` has **no `schedule:` trigger yet** —
-  `workflow_dispatch` only, deliberately, so this can't start live-trading
-  (even on paper) the moment credentials exist. Add the schedule back in
-  (commented-out block already in the file) only after the backtest above
-  has run and been reviewed.
+- `.github/workflows/daytrader.yml`'s `schedule:` trigger is **live**
+  (enabled 2026-08-07, see top banner) — 5-minute cron, 13:00-21:59 UTC
+  weekdays. `workflow_dispatch` also stays available for manual runs.
 - Other env vars (see root `.env.example`): `DAYTRADER_UNATTENDED`,
   `DAYTRADER_FAST_EMA`, `DAYTRADER_SLOW_EMA`, `DAYTRADER_RSI_PERIOD`,
   `DAYTRADER_RSI_ENTRY_MIN`, `DAYTRADER_RSI_ENTRY_MAX`,

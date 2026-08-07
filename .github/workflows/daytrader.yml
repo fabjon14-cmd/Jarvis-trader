@@ -1,19 +1,20 @@
 name: Day Trader
 
-# workflow_dispatch ONLY for now — no `schedule:` trigger. This strategy
-# has not been backtested yet (see daytrader/CLAUDE.md's top banner); the
-# whole point of this project's crypto-scalper history is that a strategy
-# shouldn't go live before that review happens. Once the backtest has run
-# and been reviewed, add back:
-#   schedule:
-#     - cron: "*/5 13-21 * * 1-5"
-# (13:00-21:59 UTC on weekdays — a superset covering NYSE regular hours
-# 9:30-16:00 ET under both EDT and EST, so one cron works year-round
-# without a DST-dependent edit). The agent itself checks Alpaca's own
-# market clock every run and holds if the market is actually closed
-# (holidays, early closes) — the cron window would only be a safe bound,
-# not the source of truth.
+# ENABLED 2026-08-07 on the operator's explicit instruction, after the
+# strategy was backtested (5/6 windows profitable, +3.47%/window average,
+# beating SPY over the same 6 windows — see daytrader/CLAUDE.md's top
+# banner for the full result and its caveats before assuming this is a
+# long track record rather than one honest first test).
+#
+# Fires every 5 minutes, 13:00-21:59 UTC on weekdays — a superset covering
+# NYSE regular hours (9:30-16:00 ET) under both EDT and EST, so one cron
+# works year-round without a DST-dependent edit. The agent itself checks
+# Alpaca's own market clock every run and holds if the market is actually
+# closed (holidays, early closes) — the cron window is just a safe bound,
+# not the source of truth. workflow_dispatch stays enabled for manual runs.
 on:
+  schedule:
+    - cron: "*/5 13-21 * * 1-5"
   workflow_dispatch: {}
 
 permissions:

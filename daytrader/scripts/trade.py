@@ -1,8 +1,14 @@
 # daytrader/scripts/trade.py
 #
-# Order placement for the intraday equities day-trading agent. Own Alpaca
-# account — DAYTRADER_APCA_* credentials, entirely separate from both the
-# equities Trader and the crypto scalper.
+# Order placement for the intraday equities day-trading agent.
+#
+# Shares the crypto scalper's Alpaca account (operator's explicit choice,
+# 2026-08-07 — see CLAUDE.md "Sharing the crypto scalper's Alpaca
+# account") rather than a fourth separate one. No symbol overlap risk
+# (crypto pairs are "BTC/USD"-shaped, this trades bare tickers), but order
+# history on a shared account includes crypto scalper's own orders — every
+# check below that reads order history filters to WATCHLIST_SYMBOLS so
+# crypto activity never counts against this agent's caps, or vice versa.
 
 import os
 import sys
@@ -21,6 +27,9 @@ from research import (
     get_account,
     PER_TRADE_PCT_CAP,
 )
+
+with open(os.path.join(os.path.dirname(__file__), "..", "watchlist.json")) as _f:
+    WATCHLIST_SYMBOLS = set(json.load(_f)["symbols"])
 
 ALPACA_KEY = os.getenv("DAYTRADER_APCA_API_KEY_ID")
 ALPACA_SECRET = os.getenv("DAYTRADER_APCA_API_SECRET_KEY")
@@ -65,7 +74,9 @@ def confirm(prompt):
 def _find_duplicate_order(symbol, qty, side, limit_price):
     """Same exact-match-today dedup as the other two bots — protects a run
     that crashes after submitting but before journaling from doubling a
-    position on restart."""
+    position on restart. Matching on the exact symbol already makes this
+    safe on a shared account without needing a WATCHLIST_SYMBOLS filter —
+    a crypto order can never accidentally match an equity symbol string."""
     today = datetime.now(timezone.utc).date()
     for o in get_orders(status="all", limit=300):
         if o.get("symbol") != symbol or o.get("side") != side:
@@ -115,7 +126,7 @@ def place_order(symbol, qty, side, limit_price=None, market=False, client_order_
         if cb.get("halted"):
             return {"placed": False, "reason": f"circuit breaker halted: {cb.get('reason')}"}
 
-        deployed_today = get_deployed_notional()
+        deployed_today = get_deployed_notional(symbols=WATCHLIST_SYMBOLS)
         if deployed_today + notional > DAILY_NOTIONAL_CAP:
             return {"placed": False, "reason": f"daily notional cap ${DAILY_NOTIONAL_CAP} would be exceeded (${deployed_today:.2f} already deployed today)"}
 

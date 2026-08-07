@@ -80,8 +80,18 @@ def run():
     minutes_left = _minutes_to_close(clock)
     force_flatten = minutes_left is not None and minutes_left <= EOD_FLATTEN_MINUTES
 
+    watchlist = _load_watchlist()
+
     try:
-        positions = {p["symbol"]: p for p in research.get_positions()}
+        # Filtered to this agent's own watchlist — the account is shared
+        # with the crypto scalper (see CLAUDE.md "Sharing the crypto
+        # scalper's Alpaca account"), so research.get_positions() also
+        # returns crypto pairs like "BTC/USD". Without this filter, the
+        # exit loop below would try to run equities exit-crossover checks
+        # against a crypto symbol (crash) and open_count would include
+        # crypto scalper's own positions, wrongly shrinking daytrader's
+        # available position slots.
+        positions = {p["symbol"]: p for p in research.get_positions() if p["symbol"] in watchlist}
     except Exception as e:
         _append_journal([f"Could not fetch positions ({e}) — holding entire run."], [])
         return
@@ -129,7 +139,6 @@ def run():
         lines.append(f"New-entry evaluation blocked this run: {buy_block_reason}.")
 
     # --- New entries ---
-    watchlist = _load_watchlist()
     try:
         account = research.get_account()
         equity = float(account["equity"])

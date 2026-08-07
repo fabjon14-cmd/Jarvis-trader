@@ -37,9 +37,13 @@ jobs:
 
       - name: Run backtest
         env:
-          DAYTRADER_APCA_API_KEY_ID: ${{ secrets.DAYTRADER_APCA_API_KEY_ID }}
-          DAYTRADER_APCA_API_SECRET_KEY: ${{ secrets.DAYTRADER_APCA_API_SECRET_KEY }}
-          DAYTRADER_APCA_BASE_URL: ${{ secrets.DAYTRADER_APCA_BASE_URL }}
+          # Shares the crypto scalper's account — see daytrader.yml and
+          # daytrader/CLAUDE.md "Sharing the crypto scalper's Alpaca
+          # account". Market-data reads here don't touch order history at
+          # all, so no symbol filtering is needed for this workflow.
+          DAYTRADER_APCA_API_KEY_ID: ${{ secrets.CRYPTO_APCA_API_KEY_ID }}
+          DAYTRADER_APCA_API_SECRET_KEY: ${{ secrets.CRYPTO_APCA_API_SECRET_KEY }}
+          DAYTRADER_APCA_BASE_URL: ${{ secrets.CRYPTO_APCA_BASE_URL }}
         run: |
           if [ -n "${{ github.event.inputs.detail_symbol }}" ]; then
             python3 daytrader/scripts/backtest.py detail "${{ github.event.inputs.detail_symbol }}" "${{ github.event.inputs.lookback_days || 30 }}"

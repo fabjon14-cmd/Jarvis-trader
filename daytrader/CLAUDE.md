@@ -19,17 +19,60 @@ how, and "Setup notes" for the credential this is blocked on right now.
 
 ---
 
-A third, independent agent in this repo — separate from both the equities
-Trader (hourly, hold-for-days, research-driven) and the crypto scalper
-(5-minute, 24/7, RSI/EMA momentum scalp on crypto). Own Alpaca **paper
-trading** account (own API keys, `DAYTRADER_APCA_*` env vars, own equity
-curve), a third distinct strategy, its own risk budget, its own journal —
-full blast-radius isolation from both other bots, same reasoning as
-crypto-scalper/CLAUDE.md's isolation section.
+A third, independent strategy in this repo — separate from both the
+equities Trader (hourly, hold-for-days, research-driven) and the crypto
+scalper (5-minute, 24/7, RSI/EMA momentum scalp on crypto). Not a fourth
+separate Alpaca account, though — see the next section.
+
+## Sharing the crypto scalper's Alpaca account (operator's choice, 2026-08-07)
+
+Every other pair of bots in this repo gets full account isolation (see
+crypto-scalper/CLAUDE.md's isolation section) — this one deliberately
+doesn't, at the operator's explicit request, to avoid a third paper
+account signup. `DAYTRADER_APCA_API_KEY_ID` / `_SECRET_KEY` / `_BASE_URL`
+are populated in both `.github/workflows/daytrader.yml` and
+`daytrader-backtest.yml` from `secrets.CRYPTO_APCA_*` — the exact same
+Alpaca account the crypto scalper trades on, not a copy.
+
+**Why this is safe here specifically, when it wouldn't be with the
+equities Trader:** equities and crypto symbols can never collide —
+crypto pairs are always `"BTC/USD"`-shaped, this trades bare tickers like
+`"AAPL"`. There's no scenario where both strategies end up holding
+"the same" position and fighting over whose it is, unlike sharing with
+the equities Trader (whose watchlist genuinely overlaps this one).
+
+**What still had to be fixed for this to be safe:**
+- `research.get_deployed_notional()` and `get_day_trade_count()` both
+  gained an optional `symbols` filter — `trade.py` and `research.py`'s
+  CLI both pass this agent's own watchlist. Without it, the crypto
+  scalper's buy orders would count against daytrader's daily notional
+  cap (and vice versa), since both strategies' orders live in the same
+  account order history.
+- `agent/daytrader_agent.py` filters `research.get_positions()` down to
+  watchlist symbols before doing anything else — otherwise the exit loop
+  would try to run an equities EMA-crossover check against a symbol like
+  `"BTC/USD"` (crash), and `open_count` (used for the max-positions cap)
+  would include the crypto scalper's own open positions, wrongly
+  shrinking how many equity positions daytrader thinks it can open.
+- `_find_duplicate_order()` needed no change — it already matches on the
+  exact symbol string, so a crypto order can never accidentally look like
+  a duplicate of an equity one.
+
+**What can't be fixed, and is an accepted tradeoff of sharing:** account
+`equity` / `buying_power` (used for the 1% position-size cap) and the
+daily-drawdown circuit breaker both reflect the **combined** account —
+Alpaca has no concept of a sub-account or strategy-scoped equity. A bad
+day for the crypto scalper shrinks daytrader's position sizing and could
+trip its circuit breaker, and vice versa, even though neither strategy's
+own performance caused it. If this turns out to matter in practice (e.g.
+the circuit breaker trips from crypto volatility on a day daytrader did
+nothing wrong), the fix is a real separate account at that point, not
+more filtering — this is a genuine limit of sharing, not a bug to code
+around.
 
 ## Tools available
 
-- `scripts/research.py` — `account | positions | orders [STATUS] | clock | bars SYMBOL | signal SYMBOL | circuit-breaker | deployed | day-trades` (read-only). Talks to this agent's own Alpaca account via `DAYTRADER_APCA_API_KEY_ID` / `DAYTRADER_APCA_API_SECRET_KEY` / `DAYTRADER_APCA_BASE_URL`.
+- `scripts/research.py` — `account | positions | orders [STATUS] | clock | bars SYMBOL | signal SYMBOL | circuit-breaker | deployed | day-trades` (read-only). Talks to the shared Alpaca account via `DAYTRADER_APCA_API_KEY_ID` / `DAYTRADER_APCA_API_SECRET_KEY` / `DAYTRADER_APCA_BASE_URL` (same underlying account as `CRYPTO_APCA_*` — see above).
 - `scripts/trade.py` — `status | order SYMBOL QTY SIDE [LIMIT_PRICE] | cancel`.
 - `agent/daytrader_agent.py` — the run loop: checks the market clock, force-flattens near close, checks exits (stop-loss/take-profit/opposite-crossover) on open positions, then evaluates new-entry signals across the watchlist, places orders, journals every decision. Scheduled every 5 minutes during market hours.
 - `scripts/backtest.py` — `[LOOKBACK_DAYS] [END_DAYS_AGO]` (aggregate report) or `detail SYMBOL [LOOKBACK_DAYS]` (trade-by-trade). See "Backtesting" below — **run this before trusting anything else in this file.**
@@ -198,20 +241,13 @@ that's actually been done.
 
 ## Setup notes
 
-- Requires a **third, separate** Alpaca paper account — do not reuse
-  either the equities Trader's `APCA_*` keys or the crypto scalper's
-  `CRYPTO_APCA_*` keys. Create a new paper account (or new key pair) at
-  https://app.alpaca.markets/paper/dashboard/overview and set
-  `DAYTRADER_APCA_API_KEY_ID` / `DAYTRADER_APCA_API_SECRET_KEY` /
-  `DAYTRADER_APCA_BASE_URL` as GitHub Actions repository secrets on
-  `fabjon14-cmd/Jarvis-trader` (`gh secret set NAME --repo
-  fabjon14-cmd/Jarvis-trader`), matching exactly how the crypto scalper
-  was bootstrapped.
-- Market-data calls (`get_bars`, used by both `research.py` and
-  `backtest.py`) hit `data.alpaca.markets`, which accepts any valid
-  Alpaca key pair regardless of which paper account it's tied to — so the
-  same new key pair covers both backtesting and live trading, no separate
-  data-only credential needed.
+- No separate credentials needed — `DAYTRADER_APCA_*` env vars are
+  populated from the existing `CRYPTO_APCA_*` GitHub secrets at the
+  workflow level (see "Sharing the crypto scalper's Alpaca account"
+  above). Requires that account to have equities trading enabled, not
+  just crypto — confirmed 2026-08-07 via `scripts/research.py account`
+  (Alpaca paper accounts support stocks by default; crypto is additive,
+  doesn't replace it).
 - `.github/workflows/daytrader.yml` has **no `schedule:` trigger yet** —
   `workflow_dispatch` only, deliberately, so this can't start live-trading
   (even on paper) the moment credentials exist. Add the schedule back in

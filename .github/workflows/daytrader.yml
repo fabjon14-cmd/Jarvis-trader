@@ -40,9 +40,14 @@ jobs:
 
       - name: Run daytrader agent
         env:
-          DAYTRADER_APCA_API_KEY_ID: ${{ secrets.DAYTRADER_APCA_API_KEY_ID }}
-          DAYTRADER_APCA_API_SECRET_KEY: ${{ secrets.DAYTRADER_APCA_API_SECRET_KEY }}
-          DAYTRADER_APCA_BASE_URL: ${{ secrets.DAYTRADER_APCA_BASE_URL }}
+          # Shares the crypto scalper's Alpaca account (operator's choice,
+          # 2026-08-07) — no separate DAYTRADER_APCA_* secrets exist.
+          # research.py/trade.py filter all order-history reads to this
+          # agent's own watchlist so crypto scalper's orders never count
+          # against daytrader's caps. See daytrader/CLAUDE.md.
+          DAYTRADER_APCA_API_KEY_ID: ${{ secrets.CRYPTO_APCA_API_KEY_ID }}
+          DAYTRADER_APCA_API_SECRET_KEY: ${{ secrets.CRYPTO_APCA_API_SECRET_KEY }}
+          DAYTRADER_APCA_BASE_URL: ${{ secrets.CRYPTO_APCA_BASE_URL }}
           DAYTRADER_UNATTENDED: "1"
         run: python3 daytrader/agent/daytrader_agent.py
 

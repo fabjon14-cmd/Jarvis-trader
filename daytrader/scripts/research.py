@@ -1,11 +1,18 @@
 # daytrader/scripts/research.py
 #
 # Read-only data + signal computation for the intraday equities day-trading
-# agent. A third, independent agent in this repo — separate from both the
-# equities Trader (hourly, hold-for-days, research-driven) and the crypto
-# scalper (5-min, 24/7, RSI/EMA scalp). Own Alpaca account/keys
-# (DAYTRADER_APCA_*), own equity curve, own risk budget, own journal — full
-# blast-radius isolation, same reasoning as crypto-scalper/CLAUDE.md.
+# agent. A third, independent strategy in this repo — separate from both
+# the equities Trader (hourly, hold-for-days, research-driven) and the
+# crypto scalper (5-min, 24/7, RSI/EMA scalp).
+#
+# Shares the crypto scalper's Alpaca account (DAYTRADER_APCA_* env vars
+# are populated from the same credentials as CRYPTO_APCA_* at the
+# workflow level — operator's explicit choice, 2026-08-07, see
+# CLAUDE.md "Sharing the crypto scalper's Alpaca account"). Safe because
+# equities and crypto symbols never collide (bare tickers vs "BTC/USD"),
+# but every function here that reads order history accepts an optional
+# `symbols` filter so crypto scalper's own orders never count against
+# this agent's caps — always pass it when the account is shared.
 #
 # Market-data calls (get_bars) hit data.alpaca.markets, which accepts any
 # valid Alpaca key pair regardless of which paper account it's tied to —
@@ -268,13 +275,20 @@ def get_circuit_breaker_status():
     }
 
 
-def get_deployed_notional():
+def get_deployed_notional(symbols=None):
     """Sum of today's buy-order notional from this account's own order
     history — used for the daily notional cap, same pattern as the other
-    two bots."""
+    two bots.
+
+    `symbols`, if given, restricts this to that set — REQUIRED when this
+    account is shared with the crypto scalper (see CLAUDE.md "Sharing the
+    crypto scalper's Alpaca account"), otherwise crypto buy orders would
+    count against daytrader's own daily notional cap and vice versa."""
     today = datetime.now(timezone.utc).date()
     deployed = 0.0
-    for o in get_orders(status="all", limit=200):
+    for o in get_orders(status="all", limit=300):
+        if symbols is not None and o.get("symbol") not in symbols:
+            continue
         if o.get("side") != "buy":
             continue
         if o.get("status") in ("canceled", "cancelled", "rejected", "expired"):
@@ -294,14 +308,17 @@ def get_deployed_notional():
     return deployed
 
 
-def get_day_trade_count(lookback_business_days=5):
+def get_day_trade_count(lookback_business_days=5, symbols=None):
     """Informational only (see CLAUDE.md 'Day-trade tracking') — paper
     accounts have no PDT rule, but this strategy closes same-day essentially
     every time, so tracking the trailing count now means no surprise if this
-    account is ever made live."""
+    account is ever made live. `symbols` filters to daytrader's own
+    watchlist when the account is shared with the crypto scalper."""
     cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_business_days * 1.6)
     fills = {}
     for o in get_orders(status="closed", limit=300):
+        if symbols is not None and o.get("symbol") not in symbols:
+            continue
         if o.get("status") != "filled":
             continue
         filled_at = o.get("filled_at")
@@ -343,8 +360,12 @@ if __name__ == "__main__":
     elif action == "circuit-breaker":
         print(json.dumps(get_circuit_breaker_status()))
     elif action == "deployed":
-        print(json.dumps({"deployed_notional": get_deployed_notional()}))
+        with open(os.path.join(os.path.dirname(__file__), "..", "watchlist.json")) as f:
+            wl = set(json.load(f)["symbols"])
+        print(json.dumps({"deployed_notional": get_deployed_notional(symbols=wl)}))
     elif action == "day-trades":
-        print(json.dumps({"day_trade_count": get_day_trade_count()}))
+        with open(os.path.join(os.path.dirname(__file__), "..", "watchlist.json")) as f:
+            wl = set(json.load(f)["symbols"])
+        print(json.dumps({"day_trade_count": get_day_trade_count(symbols=wl)}))
     else:
         print("Usage: research.py account | positions | orders [STATUS] | clock | bars SYMBOL | signal SYMBOL | circuit-breaker | deployed | day-trades")

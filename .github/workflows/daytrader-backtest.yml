@@ -1,0 +1,48 @@
+name: Day Trader Backtest
+
+# On-demand only — not scheduled. Replays the live signal/exit logic
+# bar-by-bar over historical 5-minute equity bars, before this strategy is
+# trusted with even paper money. See daytrader/scripts/backtest.py and
+# daytrader/CLAUDE.md "Backtesting" for what this does and doesn't model.
+on:
+  workflow_dispatch:
+    inputs:
+      lookback_days:
+        description: "How many days of historical 5-minute bars to test"
+        required: false
+        default: "30"
+      end_days_ago:
+        description: "Shift the window backward by this many days (out-of-sample validation)"
+        required: false
+        default: "0"
+      detail_symbol:
+        description: "Optional: symbol to show full trade-by-trade detail for, instead of the aggregate report"
+        required: false
+        default: ""
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests python-dotenv
+
+      - name: Run backtest
+        env:
+          DAYTRADER_APCA_API_KEY_ID: ${{ secrets.DAYTRADER_APCA_API_KEY_ID }}
+          DAYTRADER_APCA_API_SECRET_KEY: ${{ secrets.DAYTRADER_APCA_API_SECRET_KEY }}
+          DAYTRADER_APCA_BASE_URL: ${{ secrets.DAYTRADER_APCA_BASE_URL }}
+        run: |
+          if [ -n "${{ github.event.inputs.detail_symbol }}" ]; then
+            python3 daytrader/scripts/backtest.py detail "${{ github.event.inputs.detail_symbol }}" "${{ github.event.inputs.lookback_days || 30 }}"
+          else
+            python3 daytrader/scripts/backtest.py "${{ github.event.inputs.lookback_days || 30 }}" "${{ github.event.inputs.end_days_ago || 0 }}"
+          fi

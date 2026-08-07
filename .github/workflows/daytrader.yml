@@ -1,0 +1,59 @@
+name: Day Trader
+
+# workflow_dispatch ONLY for now — no `schedule:` trigger. This strategy
+# has not been backtested yet (see daytrader/CLAUDE.md's top banner); the
+# whole point of this project's crypto-scalper history is that a strategy
+# shouldn't go live before that review happens. Once the backtest has run
+# and been reviewed, add back:
+#   schedule:
+#     - cron: "*/5 13-21 * * 1-5"
+# (13:00-21:59 UTC on weekdays — a superset covering NYSE regular hours
+# 9:30-16:00 ET under both EDT and EST, so one cron works year-round
+# without a DST-dependent edit). The agent itself checks Alpaca's own
+# market clock every run and holds if the market is actually closed
+# (holidays, early closes) — the cron window would only be a safe bound,
+# not the source of truth.
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: daytrader
+  cancel-in-progress: false
+
+jobs:
+  run-daytrader:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests python-dotenv
+
+      - name: Run daytrader agent
+        env:
+          DAYTRADER_APCA_API_KEY_ID: ${{ secrets.DAYTRADER_APCA_API_KEY_ID }}
+          DAYTRADER_APCA_API_SECRET_KEY: ${{ secrets.DAYTRADER_APCA_API_SECRET_KEY }}
+          DAYTRADER_APCA_BASE_URL: ${{ secrets.DAYTRADER_APCA_BASE_URL }}
+          DAYTRADER_UNATTENDED: "1"
+        run: python3 daytrader/agent/daytrader_agent.py
+
+      - name: Commit journal update
+        run: |
+          git config user.name "daytrader-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add daytrader/journal/
+          if git diff --staged --quiet; then
+            echo "No journal changes to commit."
+          else
+            git commit -m "Day trader run $(date -u +'%Y-%m-%d %H:%M UTC')"
+            git push
+          fi

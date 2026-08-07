@@ -27,6 +27,10 @@ on:
         description: "Set to 'true' to report current ATR-based position sizing for every watchlist symbol instead of running the strategy"
         required: false
         default: ""
+      clock:
+        description: "Set to 'true' to report Alpaca's market clock (is_open/next_open/next_close) instead of running the strategy"
+        required: false
+        default: ""
 
 # Runs on the same self-hosted runner as daytrader.yml (added 2026-08-07)
 # — GitHub's hosted pool queued this workflow for 15+ minutes multiple
@@ -52,7 +56,9 @@ jobs:
           DAYTRADER_APCA_API_SECRET_KEY: ${{ secrets.CRYPTO_APCA_API_SECRET_KEY }}
           DAYTRADER_APCA_BASE_URL: ${{ secrets.CRYPTO_APCA_BASE_URL }}
         run: |
-          if [ -n "${{ github.event.inputs.detail_symbol }}" ]; then
+          if [ "${{ github.event.inputs.clock }}" = "true" ]; then
+            python3 daytrader/scripts/research.py clock
+          elif [ -n "${{ github.event.inputs.detail_symbol }}" ]; then
             python3 daytrader/scripts/backtest.py detail "${{ github.event.inputs.detail_symbol }}" "${{ github.event.inputs.lookback_days || 30 }}"
           elif [ "${{ github.event.inputs.atr_check }}" = "true" ]; then
             python3 daytrader/scripts/backtest.py atr-check

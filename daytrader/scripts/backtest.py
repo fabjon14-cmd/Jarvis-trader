@@ -190,6 +190,58 @@ def detail_symbol(symbol, lookback_days=30, end_days_ago=0):
     return {"symbol": symbol, "bars_fetched": len(bars), "trades": trades}
 
 
+def compute_atr_series(bars, period=14):
+    """Wilder-smoothed ATR, same formula as the crypto scalper's. Used only
+    to sanity-check a proposed ATR-based sizing formula against real data
+    before it's built into the live agent — see atr_check() below."""
+    if len(bars) < period + 2:
+        return []
+    trs = []
+    for i in range(1, len(bars)):
+        high, low, prev_close = bars[i]["h"], bars[i]["l"], bars[i - 1]["c"]
+        trs.append(max(high - low, abs(high - prev_close), abs(low - prev_close)))
+    if len(trs) < period:
+        return []
+    atr = [sum(trs[:period]) / period]
+    for tr in trs[period:]:
+        atr.append((atr[-1] * (period - 1) + tr) / period)
+    return atr
+
+
+def atr_check(lookback_days=5):
+    """For every watchlist symbol: current 5-min ATR(14), and what
+    Shares = (account_balance * 0.01) / (1.5 * ATR) would actually size a
+    position to, as a percentage of account balance — using a nominal
+    $100,000 balance (Alpaca's standard paper default) since this doesn't
+    depend on the actual account size, only on price/ATR ratio."""
+    with open(os.path.join(os.path.dirname(__file__), "..", "watchlist.json")) as f:
+        symbols = json.load(f)["symbols"]
+    nominal_balance = 100000
+    results = []
+    for symbol in symbols:
+        bars = fetch_historical_bars(symbol, lookback_days=lookback_days)
+        closes = [b["c"] for b in bars]
+        atr_series = compute_atr_series(bars, period=14)
+        if not atr_series or not closes:
+            results.append({"symbol": symbol, "error": "insufficient bars"})
+            continue
+        current_atr = atr_series[-1]
+        last_price = closes[-1]
+        stop_distance = 1.5 * current_atr
+        shares = (nominal_balance * 0.01) / stop_distance
+        notional = shares * last_price
+        results.append({
+            "symbol": symbol,
+            "last_price": round(last_price, 2),
+            "atr14_5min": round(current_atr, 4),
+            "atr_as_pct_of_price": round(current_atr / last_price * 100, 3),
+            "shares_at_nominal_100k": round(shares, 1),
+            "notional": round(notional, 2),
+            "notional_as_pct_of_account": round(notional / nominal_balance * 100, 1),
+        })
+    return results
+
+
 def spy_benchmark(lookback_days=30, end_days_ago=0):
     """SPY buy-and-hold % change over the same window, for the same
     'did the strategy beat just holding the market' comparison the crypto
@@ -219,6 +271,8 @@ if __name__ == "__main__":
         lookback = int(sys.argv[2]) if len(sys.argv) > 2 else 30
         end_days_ago = int(sys.argv[3]) if len(sys.argv) > 3 else 0
         print(json.dumps(spy_benchmark(lookback_days=lookback, end_days_ago=end_days_ago), indent=2))
+    elif action == "atr-check":
+        print(json.dumps(atr_check(), indent=2))
     else:
         lookback = int(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1].lstrip("-").isdigit() else 30
         end_days_ago = int(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2].lstrip("-").isdigit() else 0

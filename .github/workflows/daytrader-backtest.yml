@@ -23,6 +23,10 @@ on:
         description: "Set to 'spy' to report SPY buy-and-hold percent change over the window instead of running the strategy"
         required: false
         default: ""
+      atr_check:
+        description: "Set to 'true' to report current ATR-based position sizing for every watchlist symbol instead of running the strategy"
+        required: false
+        default: ""
 
 jobs:
   backtest:
@@ -51,6 +55,8 @@ jobs:
         run: |
           if [ -n "${{ github.event.inputs.detail_symbol }}" ]; then
             python3 daytrader/scripts/backtest.py detail "${{ github.event.inputs.detail_symbol }}" "${{ github.event.inputs.lookback_days || 30 }}"
+          elif [ "${{ github.event.inputs.atr_check }}" = "true" ]; then
+            python3 daytrader/scripts/backtest.py atr-check
           elif [ "${{ github.event.inputs.benchmark }}" = "spy" ]; then
             python3 daytrader/scripts/backtest.py benchmark "${{ github.event.inputs.lookback_days || 30 }}" "${{ github.event.inputs.end_days_ago || 0 }}"
           else

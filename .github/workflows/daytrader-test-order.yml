@@ -1,0 +1,37 @@
+name: Day Trader Manual Test Order
+
+# workflow_dispatch ONLY — never scheduled. One-off pipeline verification:
+# places a single small bracket order, bypassing the strategy's own
+# entry conditions entirely (EMA cross / RSI / ATR filter / time-of-day
+# window). NOT a strategy trade — see daytrader/scripts/test_order.py and
+# daytrader/CLAUDE.md "Manual order-placement verification" for why this
+# exists and why it's deliberately kept separate from daytrader.yml.
+on:
+  workflow_dispatch:
+    inputs:
+      symbol:
+        description: "Symbol to test (must be on the watchlist)"
+        required: false
+        default: "DIS"
+      qty:
+        description: "Share quantity for the test order"
+        required: false
+        default: "1"
+
+jobs:
+  test-order:
+    runs-on: [self-hosted, macOS, trading-bots]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: python3 -m pip install --break-system-packages -q requests python-dotenv
+
+      - name: Place test order
+        env:
+          DAYTRADER_APCA_API_KEY_ID: ${{ secrets.CRYPTO_APCA_API_KEY_ID }}
+          DAYTRADER_APCA_API_SECRET_KEY: ${{ secrets.CRYPTO_APCA_API_SECRET_KEY }}
+          DAYTRADER_APCA_BASE_URL: ${{ secrets.CRYPTO_APCA_BASE_URL }}
+          DAYTRADER_UNATTENDED: "1"
+        run: python3 daytrader/scripts/test_order.py "${{ github.event.inputs.symbol || 'DIS' }}" "${{ github.event.inputs.qty || '1' }}"

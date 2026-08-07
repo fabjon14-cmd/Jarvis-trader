@@ -1,21 +1,45 @@
 # Day Trader — Project Notes
 
-## ⚠ Not yet backtested — do not treat this as validated (2026-08-07)
+## ⚠ Backtested 2026-08-07 — mixed/negative result, not enabled live
 
-This agent was built from the operator's own strategy spec (2026-08-07),
-with two real corrections applied during the build (see "Position sizing —
-the bug in the original spec" and "Long-only, no shorting" below) and one
-addition beyond the spec (see "Forced end-of-day flatten"). **It has not
-yet been backtested against real historical data.** Per this project's own
-established standard (see crypto-scalper/CLAUDE.md's entire backtesting
-history), a strategy that "looks right" in code is not the same claim as a
-strategy that has edge — every one of the crypto scalper's five tested
-configurations looked reasonable on paper and several looked great
-in-sample before failing out-of-sample. Do not enable the live schedule
-(`.github/workflows/daytrader.yml`'s `schedule:` trigger) or treat any
-paper-trading result from this agent as meaningful until
-`scripts/backtest.py` has actually been run — see "Backtesting" below for
-how, and "Setup notes" for the credential this is blocked on right now.
+6 independent, non-overlapping 30-day windows (180 calendar days,
+2,316 total simulated trades across the 12-symbol watchlist):
+
+| Window (days ago) | Total return | Trades | Win rate |
+|---|---|---|---|
+| 0-30 (most recent) | +9.48% | 397 | 35.3% |
+| 30-60 | -16.38% | 383 | 30.5% |
+| 60-90 | +0.10% | 382 | 34.6% |
+| 90-120 | +18.04% | 392 | 37.5% |
+| 120-150 | -26.36% | 350 | 27.7% |
+| 150-180 | -8.44% | 412 | 35.4% |
+
+**Average: -3.93%/window, 3 of 6 windows profitable.** SPY buy-and-hold
+over the same full 180-day span: **+10.76%** (≈+1.79%/30-day-window
+equivalent) — the strategy underperformed simply holding the market by a
+wide margin, and lost money outright in half the windows tested.
+
+This is the same shape of result as the crypto scalper's own multi-window
+study (see crypto-scalper/CLAUDE.md): a strategy that can look
+profitable in a given window (three of these six were) but has no
+demonstrated durable edge across independent windows, and loses to
+buy-and-hold on average. It is meaningfully *less bad* than the crypto
+scalper's finding (-3.93%/window here vs. -22.2%/window there, and 3/6
+profitable here vs. 1/8 there) — this is a genuinely different, weaker
+verdict, not "equally broken" — but it is still not a green light.
+
+**Not enabled for live trading as a result of this finding** — the
+`schedule:` trigger stays out of `.github/workflows/daytrader.yml` (see
+"Setup notes"). This is a decision point for the operator, same as the
+crypto scalper's pause/resume choice: run it live anyway as a deliberate,
+informed choice on paper money, revisit the entry/exit parameters (e.g.
+narrower RSI band, wider stop, a trend/regime filter), or leave it built
+but dormant. Not proceeding to live trading automatically either way
+without that explicit choice being made.
+
+Raw run history if you want to re-derive any of this: GitHub Actions runs
+31160917572 (window 0), 31160995335 (30), 31161057871 (60), 31161099402
+(90), 31161148010 (120), 31161186487 (150), 31161344324 (SPY benchmark).
 
 ---
 
@@ -231,13 +255,13 @@ TP are both touched in the same bar" convention.
 per-trade % return, not dollar P&L; does not simulate the daily notional
 cap, max-positions cap, or cross-symbol allocation.
 
-**As of 2026-08-07, this has not been run yet** — see "Setup notes" for
-what it's blocked on. The honest, evidence-backed standard this project
-holds itself to (see crypto-scalper/CLAUDE.md in full) is: don't trust a
-signal because the code runs cleanly; trust it because a real historical
-test, ideally across more than one window, says it has positive expected
-value. Nothing in this file should be read as "this strategy works" until
-that's actually been done.
+**Run 2026-08-07 across 6 independent 30-day windows** — see the top
+banner for the full results table. The honest, evidence-backed standard
+this project holds itself to (see crypto-scalper/CLAUDE.md in full) is:
+don't trust a signal because the code runs cleanly; trust it because a
+real historical test, ideally across more than one window, says it has
+positive expected value. That test came back mixed/negative here — see
+the top banner before treating this strategy as validated.
 
 ## Setup notes
 

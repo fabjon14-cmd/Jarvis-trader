@@ -19,6 +19,7 @@ from research import (
     get_circuit_breaker_status,
     get_deployed_notional,
     get_account,
+    PER_TRADE_PCT_CAP,
 )
 
 ALPACA_KEY = os.getenv("DAYTRADER_APCA_API_KEY_ID")
@@ -30,13 +31,15 @@ UNATTENDED = os.getenv("DAYTRADER_UNATTENDED") == "1"
 
 # Not explicitly in the operator's spec, but added deliberately — see
 # CLAUDE.md "Caps added beyond the original spec" for why an unbounded
-# number of simultaneous full-notional-ish positions would be dangerous
-# given the position-sizing fix below.
+# number of simultaneous positions, even at a conservative 1% each, still
+# warrants a backstop (e.g. a run where every watchlist symbol signals at
+# once). PER_TRADE_PCT_CAP itself (the operative "1% of account balance
+# per trade" rule) is imported from research.py so there's one definition,
+# not two that could drift apart.
 MAX_ORDER_NOTIONAL = float(os.getenv("DAYTRADER_MAX_ORDER_NOTIONAL", "500"))
 MAX_ORDERS_PER_RUN = int(os.getenv("DAYTRADER_MAX_ORDERS_PER_RUN", "5"))
 DAILY_NOTIONAL_CAP = float(os.getenv("DAYTRADER_DAILY_NOTIONAL_CAP", "1000"))
 MAX_POSITIONS = int(os.getenv("DAYTRADER_MAX_POSITIONS", "5"))
-PER_TRADE_PCT_CAP = float(os.getenv("DAYTRADER_PER_TRADE_PCT_CAP", "0.05"))  # 5% of buying power
 
 _orders_this_run = 0
 

@@ -188,13 +188,15 @@ def run():
             continue
 
         entry_price = signal["last_price"]
-        risk_qty = research.compute_risk_based_qty(entry_price, equity)
-        notional_cap_qty = min(
-            trade.MAX_ORDER_NOTIONAL,
-            buying_power * trade.PER_TRADE_PCT_CAP,
-        ) / entry_price
-        qty = round(min(risk_qty, notional_cap_qty), 4)
-        binding = "risk_target" if risk_qty <= notional_cap_qty else "notional_cap"
+        # PER_TRADE_PCT_CAP (default 1%) of total account balance — the
+        # operator's spec, taken literally as a position-size cap. Backed
+        # by MAX_ORDER_NOTIONAL as a secondary dollar ceiling (matters more
+        # on a large account, where 1% could still be a large dollar
+        # amount) — whichever is smaller actually binds, logged below.
+        pct_cap_qty = research.compute_position_qty(entry_price, equity)
+        notional_cap_qty = trade.MAX_ORDER_NOTIONAL / entry_price
+        qty = round(min(pct_cap_qty, notional_cap_qty), 4)
+        binding = "per_trade_pct_cap" if pct_cap_qty <= notional_cap_qty else "max_order_notional"
 
         if qty <= 0:
             lines.append(f"{symbol}: signal qualified but computed qty was 0 — hold.")
@@ -204,9 +206,9 @@ def run():
         limit_price = round(entry_price * (1 + LIMIT_SLIPPAGE_BUFFER), 2)
         result = trade.place_order(symbol, qty, "buy", limit_price=limit_price)
         envelope["action"] = "NEW_TRADE"
-        envelope["risk_sizing"] = {
-            "target_risk_pct": research.TARGET_RISK_PCT,
-            "risk_based_qty": round(risk_qty, 4),
+        envelope["position_sizing"] = {
+            "per_trade_pct_cap": research.PER_TRADE_PCT_CAP,
+            "pct_cap_qty": round(pct_cap_qty, 4),
             "notional_cap_qty": round(notional_cap_qty, 4),
             "binding_constraint": binding,
             "qty": qty,

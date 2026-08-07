@@ -37,7 +37,10 @@ RSI_ENTRY_MAX = float(os.getenv("DAYTRADER_RSI_ENTRY_MAX", "65"))
 
 STOP_LOSS_PCT = float(os.getenv("DAYTRADER_STOP_LOSS_PCT", "1.0"))
 TAKE_PROFIT_PCT = float(os.getenv("DAYTRADER_TAKE_PROFIT_PCT", "2.0"))
-TARGET_RISK_PCT = float(os.getenv("DAYTRADER_TARGET_RISK_PCT", "1.0"))
+# "Risk a maximum of 1% of the total account balance per trade" — a
+# position-size cap, not a stop-distance-scaled dollar-risk target. See
+# CLAUDE.md "Position sizing" for why this matters.
+PER_TRADE_PCT_CAP = float(os.getenv("DAYTRADER_PER_TRADE_PCT_CAP", "1.0"))
 DAILY_DRAWDOWN_LIMIT_PCT = float(os.getenv("DAYTRADER_DAILY_DRAWDOWN_LIMIT_PCT", "3.0"))
 
 
@@ -221,26 +224,20 @@ def get_exit_crossunder(symbol, timeframe="5Min", limit=150):
     return prev_fast >= prev_slow and curr_fast < curr_slow
 
 
-def compute_risk_based_qty(entry_price, equity, stop_loss_pct=None):
-    """Quantity that would risk exactly TARGET_RISK_PCT of equity if the
-    stop-loss is hit.
-
-    IMPORTANT — see CLAUDE.md "Position sizing — the bug in the original
-    spec": combining 'risk 1% of equity' with a '1% stop distance' always
-    implies qty * entry_price == equity, i.e. the FULL account notional in
-    one trade — that's arithmetic, not a bug in this function. Exactly like
-    the crypto scalper's risk-based sizing, this is NOT used as the
-    operative size on its own; the real size is
-    min(this, notional_cap_qty), and the notional cap is expected to
-    actually bind. Both numbers get logged so 'why is actual risk far below
-    target' is answerable from the journal.
+def compute_position_qty(entry_price, account_balance):
+    """Position size = PER_TRADE_PCT_CAP of total account balance (default
+    1%), per the operator's spec: 'risk a maximum of 1% of the total
+    account balance per trade' — a straightforward position-size cap, same
+    phrasing pattern as the equities Trader's '5% of buying power per
+    symbol'. Combined with the 1% stop-loss, actual dollar loss if stopped
+    out is ~1% x 1% = 0.01% of the account — conservative by construction,
+    not the full-account sizing an earlier (incorrect) reading of this
+    would have produced. See CLAUDE.md 'Position sizing' for that history.
     """
-    stop_loss_pct = stop_loss_pct if stop_loss_pct is not None else STOP_LOSS_PCT
-    target_risk_dollar = (TARGET_RISK_PCT / 100) * equity
-    stop_distance = entry_price * (stop_loss_pct / 100)
-    if stop_distance <= 0:
+    target_notional = (PER_TRADE_PCT_CAP / 100) * account_balance
+    if entry_price <= 0:
         return 0.0
-    return target_risk_dollar / stop_distance
+    return target_notional / entry_price
 
 
 def get_circuit_breaker_status():

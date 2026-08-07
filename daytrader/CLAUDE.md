@@ -81,51 +81,49 @@ to be worth the added complexity, adding shorting is a deliberate follow-up
 (new account setting, new risk math for margin/assignment-style exposure),
 not a default.
 
-## Position sizing — the bug in the original spec (fixed 2026-08-07)
+## Position sizing (corrected 2026-08-07, after a misread was caught)
 
-The original spec said: risk 1% of account balance per trade, with a
-stop-loss 1.0% below entry. Those two numbers combined mathematically
-force betting the **entire account** on every single trade:
+The spec says: *"Risk a maximum of 1% of the total account balance per
+trade."* The first build of this file misread that as a formal
+risk-target formula — "if the 1% stop-loss is hit, the dollar loss should
+equal 1% of equity" — which, combined with a 1% stop distance,
+mathematically forces the position size to equal the **entire account**
+(`risk_$ = position_notional × stop_distance_pct`, and when both
+percentages are equal, `position_notional = equity`). That reading was
+wrong, and the operator caught it: the plain sentence is a **position-size
+cap** — don't put more than 1% of the account into any one trade — the
+same way this project phrases every other per-trade cap (e.g. the
+equities Trader's "5% of buying power per symbol"). It isn't tied to the
+stop-loss distance at all.
 
-```
-risk_$ = position_notional × stop_distance_pct
-0.01 × equity = position_notional × 0.01
-position_notional = equity
-```
+Under the correct reading there's no contradiction: position size = 1% of
+account balance, stop-loss = 1% below entry, so realized loss if stopped
+out is ≈1% × 1% = 0.01% of the account — conservative, not aggressive.
 
-Whenever the risk-% and stop-distance-% are numerically equal, position
-size always comes out to 100% of equity — regardless of what the "1%"
-was intended to mean. This is arithmetic, not a judgment call, and it's
-worth writing down plainly so it isn't silently reintroduced later.
-
-**The fix**, applied in `research.compute_risk_based_qty()` /
-`agent/daytrader_agent.py`: exactly the same pattern the crypto scalper
-already uses for the identical problem (see crypto-scalper/CLAUDE.md
-"Risk-based sizing (informational ceiling, not the operative cap)") — the
-risk-target quantity is computed and logged, but the *operative* size is
-`min(risk_based_qty, notional_cap_qty)`, where `notional_cap_qty` comes
-from `DAYTRADER_MAX_ORDER_NOTIONAL` (default $500) and
-`DAYTRADER_PER_TRADE_PCT_CAP` (default 5% of buying power, matching the
-equities Trader's own per-symbol cap). In practice the notional cap binds,
-not the 1% risk target — actual risk per trade works out to roughly
-`stop_loss_pct × per_trade_pct_cap` ≈ 0.05% of equity, not 1%. Every
-`NEW_TRADE` journal entry logs both `risk_based_qty` and
-`notional_cap_qty` with `binding_constraint`, so this is answerable
-directly from the journal, not hidden.
+**Implementation**: `research.compute_position_qty()` computes
+`(PER_TRADE_PCT_CAP / 100) × account_balance / entry_price` directly — no
+stop-distance term. `DAYTRADER_MAX_ORDER_NOTIONAL` (default $500) still
+applies as a secondary dollar ceiling, since 1% of a large account could
+still be a large single trade — whichever of the two is smaller actually
+binds, logged per trade as `binding_constraint` in the `NEW_TRADE`
+journal entry (`per_trade_pct_cap` or `max_order_notional`), so it's
+answerable from the journal which one governed a given trade's size.
 
 ## Caps added beyond the original spec (2026-08-07)
 
 The operator's spec listed position sizing, stop-loss, take-profit, and a
 daily drawdown limit under "Risk Management (Critical)" — it didn't
 specify a cap on how many symbols could have an open position
-simultaneously. Given the position-sizing fix above still allows up to
-5% of buying power per trade, an unbounded number of simultaneous
-positions across a 12-symbol watchlist could still deploy the account
-faster than intended. Added, mirroring both other bots' established
-pattern of "a well-reasoned trade shouldn't be able to talk its way past
-a mechanical cap":
+simultaneously. Even at a conservative 1% of account per trade, a run
+where every symbol on a 12-symbol watchlist signals at once would still
+open several positions in one go. Added, mirroring both other bots'
+established pattern of "a well-reasoned trade shouldn't be able to talk
+its way past a mechanical cap":
 - `DAYTRADER_MAX_POSITIONS` (default 5).
-- `DAYTRADER_MAX_ORDER_NOTIONAL` (default $500) / `DAYTRADER_PER_TRADE_PCT_CAP` (default 5%).
+- `DAYTRADER_MAX_ORDER_NOTIONAL` (default $500) — a secondary dollar
+  ceiling alongside `DAYTRADER_PER_TRADE_PCT_CAP` (default 1%, see
+  "Position sizing" above), in case 1% of a large account would still be
+  a large single trade.
 - `DAYTRADER_DAILY_NOTIONAL_CAP` (default $1,000), `DAYTRADER_MAX_ORDERS_PER_RUN` (default 5).
 - Duplicate-order protection — same exact-match-today dedup against
   Alpaca's own order history as both other bots.
@@ -223,7 +221,7 @@ that's actually been done.
   `DAYTRADER_FAST_EMA`, `DAYTRADER_SLOW_EMA`, `DAYTRADER_RSI_PERIOD`,
   `DAYTRADER_RSI_ENTRY_MIN`, `DAYTRADER_RSI_ENTRY_MAX`,
   `DAYTRADER_STOP_LOSS_PCT`, `DAYTRADER_TAKE_PROFIT_PCT`,
-  `DAYTRADER_TARGET_RISK_PCT`, `DAYTRADER_DAILY_DRAWDOWN_LIMIT_PCT`,
+  `DAYTRADER_DAILY_DRAWDOWN_LIMIT_PCT`,
   `DAYTRADER_MAX_ORDER_NOTIONAL`, `DAYTRADER_MAX_ORDERS_PER_RUN`,
   `DAYTRADER_DAILY_NOTIONAL_CAP`, `DAYTRADER_MAX_POSITIONS`,
   `DAYTRADER_PER_TRADE_PCT_CAP`, `DAYTRADER_EOD_FLATTEN_MINUTES`.

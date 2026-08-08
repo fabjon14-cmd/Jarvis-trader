@@ -281,10 +281,50 @@ bracket order can express — those two exits still require this agent's
 the bracket's still-resting SL/TP legs *before* the manual sell is
 submitted — otherwise the resting child orders would hold qty against
 (or conflict with) the manual exit, since Alpaca has no way to know a
-signal-based exit supersedes the bracket. `agent/daytrader_agent.py`'s
-exit loop no longer checks `unrealized_plpc` against stop/TP thresholds
-at all — those two paths are entirely broker-managed now; the loop only
-handles the two exits a bracket can't do.
+signal-based exit supersedes the bracket.
+
+## Fractional-share fallback (fixed 2026-08-08 — real trades were silently failing)
+
+**Every real signal that fired on 2026-08-07 (DIS and V, both during the
+afternoon entry window) was rejected by Alpaca** — not held, not
+skipped, actually rejected: `"fractional orders must be simple orders"`
+(code 42210000). Root cause: this account's equity is **$1,000.32**
+(shared with the crypto scalper), so `PER_TRADE_PCT_CAP` (1%) computes
+to about $10 per trade — a fraction of a share for every $100+ symbol on
+the watchlist (0.0953 shares of DIS, 0.0275 of V). Bracket orders don't
+support fractional quantities on Alpaca at all; only plain orders do.
+This meant every trade this account could actually afford was
+guaranteed to fail, silently from the strategy's perspective (it logged
+`NEW_TRADE` and a clean rejection reason, so nothing crashed — it just
+never actually traded, which is why it looked like "no signal fired"
+until the journal was read closely).
+
+**Fix**: `agent/daytrader_agent.py`'s entry logic now branches on the
+computed quantity:
+- `qty >= 1` → unchanged: floor to a whole share count, bracket order,
+  broker-managed stop/TP.
+- `0 < qty < 1` → plain (non-bracket) order at the fractional quantity,
+  with the ATR-derived stop/TP packed into `client_order_id` via
+  `research.encode_trade_params()` (`dt-sl10458-tp10514` = stop $104.58,
+  TP $105.14) — the exact same technique the crypto scalper already uses
+  for the identical "no broker-side place to persist per-trade exit
+  levels" problem, just with prices instead of percentages since these
+  are already ATR-derived absolute prices.
+
+The exit loop now checks `research.has_open_bracket_legs(symbol)` first:
+if true, unchanged (crossunder/EOD only, bracket handles SL/TP). If
+false, it also manually checks the position's current price against the
+decoded stop/TP from its entry order's `client_order_id` — restoring the
+polling-based check bracket orders were meant to replace, but only for
+positions that couldn't use a bracket order in the first place.
+
+**Given this account's size, expect most real trades here to use the
+fractional/plain path, not bracket orders** — the watchlist is all
+$100+ large-caps, and $1,000 × 1% ≈ $10 rarely buys a whole share of any
+of them. Bracket orders only actually apply on this account for the
+cheaper symbols (XOM, DIS) if the position-size cap is ever raised, or
+if account equity grows. Worth knowing before assuming "it's using
+bracket orders" without checking `order_kind` in the journal.
 
 ## ATR volatility filter (2026-08-07, operator's suggestion)
 

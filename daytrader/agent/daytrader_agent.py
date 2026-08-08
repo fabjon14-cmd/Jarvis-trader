@@ -96,22 +96,42 @@ def run():
         _append_journal([f"Could not fetch positions ({e}) — holding entire run."], [])
         return
 
-    # --- Exits first: forced flatten, then opposite crossover. Stop-loss
-    # and take-profit are now handled by the broker directly (see CLAUDE.md
-    # "Bracket orders") — every new entry is placed as a bracket order with
-    # SL/TP legs attached, so those two exits fire immediately on a real
-    # price cross instead of waiting for this agent's next 5-minute poll.
-    # This loop only needs to handle the two exits a bracket order can't
-    # express: a signal reversal, and the forced end-of-day flatten. ---
+    # --- Exits first: forced flatten, then opposite crossover, then
+    # (for plain/fractional positions only) manual stop-loss/take-profit.
+    # Whole-share entries are bracket orders — the broker manages their
+    # SL/TP directly, firing immediately on a real price cross instead of
+    # waiting for this agent's next 5-minute poll. Fractional-share
+    # entries can't be bracket orders at all (Alpaca rejects fractional
+    # qty on them — see research.encode_trade_params), so those positions
+    # need this loop to check their ATR-derived stop/TP manually, same as
+    # before bracket orders existed. ---
     for symbol, pos in positions.items():
         entry_price = float(pos["avg_entry_price"])
         qty = pos["qty"]
+        last_price = float(pos.get("current_price") or entry_price)
         unrealized_plpc = float(pos.get("unrealized_plpc", 0)) * 100
+
+        try:
+            is_bracket = research.has_open_bracket_legs(symbol)
+        except Exception as e:
+            lines.append(f"{symbol}: bracket-status check failed ({e}) — holding position, will retry next run.")
+            continue
 
         exit_reason = None
         if force_flatten:
             exit_reason = "eod_flatten"
-        else:
+        elif not is_bracket:
+            entry_order = research.get_position_entry_order(symbol)
+            params = research.decode_trade_params((entry_order or {}).get("client_order_id"))
+            if params:
+                if last_price <= params["stop_price"]:
+                    exit_reason = "stop_loss"
+                elif last_price >= params["tp_price"]:
+                    exit_reason = "take_profit"
+            else:
+                lines.append(f"{symbol}: WARNING — fractional position with no recoverable stop/TP (missing/unparsable client_order_id) — only crossover/EOD exits apply until closed.")
+
+        if exit_reason is None:
             try:
                 if research.get_exit_crossunder(symbol):
                     exit_reason = "opposite_crossover"
@@ -120,18 +140,19 @@ def run():
                 continue
 
         if exit_reason:
-            # Cancel the bracket's still-resting SL/TP legs first — an
+            # Cancel any still-resting bracket SL/TP legs first — an
             # un-cancelled child order would hold qty against this sell,
             # since Alpaca doesn't know this exit supersedes the bracket.
+            # No-op (0 cancelled) for a plain fractional position.
             cancel_result = trade.cancel_symbol_orders(symbol)
-            last_price = float(pos.get("current_price") or entry_price)
-            use_market = exit_reason == "eod_flatten"
+            use_market = exit_reason in ("eod_flatten", "stop_loss")
             limit_price = None if use_market else round(last_price * (1 - LIMIT_SLIPPAGE_BUFFER), 2)
             result = trade.place_order(symbol, qty, "sell", limit_price=limit_price, market=use_market)
             n_cancelled = len(cancel_result.get("cancelled_orders", []))
             lines.append(f"{symbol}: CLOSE ({exit_reason}, unrealized_plpc={unrealized_plpc:.2f}%, cancelled {n_cancelled} bracket leg(s)) -> {result}")
         else:
-            lines.append(f"{symbol}: hold open position (unrealized_plpc={unrealized_plpc:.2f}% — stop/take-profit managed by the broker-side bracket order)")
+            managed_by = "the broker-side bracket order" if is_bracket else "this agent's own manual check (fractional position)"
+            lines.append(f"{symbol}: hold open position (unrealized_plpc={unrealized_plpc:.2f}% — stop/take-profit managed by {managed_by})")
 
     if force_flatten:
         lines.append(f"Within {EOD_FLATTEN_MINUTES} min of close — new-entry evaluation skipped this run.")
@@ -215,20 +236,34 @@ def run():
         # amount) — whichever is smaller actually binds, logged below.
         pct_cap_qty = research.compute_position_qty(entry_price, equity)
         notional_cap_qty = trade.MAX_ORDER_NOTIONAL / entry_price
-        qty = round(min(pct_cap_qty, notional_cap_qty), 4)
+        raw_qty = min(pct_cap_qty, notional_cap_qty)
         binding = "per_trade_pct_cap" if pct_cap_qty <= notional_cap_qty else "max_order_notional"
 
-        if qty <= 0:
+        if raw_qty <= 0:
             lines.append(f"{symbol}: signal qualified but computed qty was 0 — hold.")
             envelopes.append(envelope)
             continue
 
         limit_price = round(entry_price * (1 + LIMIT_SLIPPAGE_BUFFER), 2)
-        # ATR-based stop/TP prices, computed in get_signal from that
-        # symbol's own current ATR — see CLAUDE.md "ATR-based stop/
-        # take-profit". Submitted as a bracket order so the broker manages
-        # the actual exit, not this agent's 5-minute poll.
-        result = trade.place_bracket_order(symbol, qty, limit_price, signal["stop_price"], signal["tp_price"])
+
+        if raw_qty >= 1:
+            # Whole share(s) — bracket order, ATR-derived stop/TP managed
+            # by the broker directly. Floor, never round up past the cap.
+            qty = int(raw_qty)
+            result = trade.place_bracket_order(symbol, qty, limit_price, signal["stop_price"], signal["tp_price"])
+            order_kind = "bracket"
+        else:
+            # Fractional share — Alpaca rejects fractional-qty bracket
+            # orders ('fractional orders must be simple orders', confirmed
+            # 2026-08-07 on this $1,000-equity account, where 1% of
+            # balance is under 1 share for every $100+ watchlist symbol).
+            # Plain order instead; stop/TP persisted via client_order_id
+            # for the exit loop to recover (see research.encode_trade_params).
+            qty = round(raw_qty, 4)
+            client_order_id = research.encode_trade_params(signal["stop_price"], signal["tp_price"])
+            result = trade.place_order(symbol, qty, "buy", limit_price=limit_price, client_order_id=client_order_id)
+            order_kind = "plain_fractional"
+
         envelope["action"] = "NEW_TRADE"
         envelope["position_sizing"] = {
             "per_trade_pct_cap": research.PER_TRADE_PCT_CAP,
@@ -236,11 +271,12 @@ def run():
             "notional_cap_qty": round(notional_cap_qty, 4),
             "binding_constraint": binding,
             "qty": qty,
+            "order_kind": order_kind,
         }
-        envelope["bracket"] = {"stop_price": signal["stop_price"], "tp_price": signal["tp_price"], "atr14": signal["atr14"]}
+        envelope["exit_levels"] = {"stop_price": signal["stop_price"], "tp_price": signal["tp_price"], "atr14": signal["atr14"]}
         envelope["order_result"] = result
         envelopes.append(envelope)
-        lines.append(f"{symbol}: NEW_TRADE qty={qty} @ ~{limit_price}, bracket SL={signal['stop_price']}/TP={signal['tp_price']} (rsi14={signal['rsi14']}, binding={binding}) -> {result}")
+        lines.append(f"{symbol}: NEW_TRADE qty={qty} ({order_kind}) @ ~{limit_price}, SL={signal['stop_price']}/TP={signal['tp_price']} (rsi14={signal['rsi14']}, binding={binding}) -> {result}")
 
         if result.get("placed"):
             open_count += 1

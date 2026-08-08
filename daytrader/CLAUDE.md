@@ -577,6 +577,32 @@ pre-existing gap and needs the same fix — flagged as a separate follow-up
 rather than changed inline here, since that's a currently-live trading
 workflow this session wasn't otherwise touching.
 
+## Immediate per-trade email notifications (added 2026-08-08)
+
+On top of the hourly digest below, `agent/daytrader_agent.py` now emails
+immediately — same run, right after the order is confirmed placed — for
+every buy and every sell it executes itself: `NEW_TRADE` (entry, either
+`order_kind`) and `CLOSE` (crossunder, forced EOD flatten, or a manually-
+checked stop-loss/take-profit on a fractional position). `_notify_trade()`
+wraps the send in try/except so a notification failure (Resend down, bad
+credentials) can never break or block the actual trade — it's a side
+effect of the trading logic, never a dependency of it.
+
+**Real gap, not a bug**: a whole-share position's stop-loss/take-profit
+is filled by the broker directly (see "Bracket orders") — the agent's
+own code never executes that sell, so there's no point in this code path
+to hook an immediate notification for it. The DIS test trade closed
+exactly this way (broker-side take-profit fill, no `CLOSE` line in the
+journal at all) and would NOT have triggered an immediate email under
+this design — only the hourly digest below would catch it, within up to
+60 minutes. Given this account's size, most real trades will use the
+fractional path (which the agent does execute directly, so immediate
+notification does apply) — but if the position-size cap or account
+equity ever grows enough that bracket/whole-share trades become common,
+this gap gets more relevant and may be worth closing (e.g. having the
+exit loop diff "positions open last run" vs "positions open now" to
+catch broker-side fills the agent didn't initiate itself).
+
 ## Hourly email digest (added 2026-08-08)
 
 Mirrors the crypto scalper's `hourly_digest.py` exactly, adapted for a

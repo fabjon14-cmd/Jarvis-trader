@@ -16,6 +16,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 import research
 import trade
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "scripts"))
+import notify
+
 WATCHLIST_PATH = os.path.join(os.path.dirname(__file__), "..", "watchlist.json")
 JOURNAL_DIR = os.path.join(os.path.dirname(__file__), "..", "journal")
 
@@ -32,6 +35,19 @@ EOD_FLATTEN_MINUTES = int(os.getenv("DAYTRADER_EOD_FLATTEN_MINUTES", "10"))
 def _load_watchlist():
     with open(WATCHLIST_PATH) as f:
         return json.load(f)["symbols"]
+
+
+def _notify_trade(subject, body, lines):
+    """Immediate per-trade email, on top of the hourly digest (which stays
+    as a backup — it re-derives from Alpaca's own order history, so it
+    still catches a trade even if this immediate send fails). Wrapped so a
+    notification failure (Resend down, bad credentials, etc.) can never
+    break or block the actual trade — it's a side effect, not a
+    dependency, of the trading logic above it."""
+    try:
+        notify.send_email(subject, body)
+    except Exception as e:
+        lines.append(f"(email notification failed: {e} — trade itself was not affected)")
 
 
 def _minutes_to_close(clock):
@@ -150,6 +166,12 @@ def run():
             result = trade.place_order(symbol, qty, "sell", limit_price=limit_price, market=use_market)
             n_cancelled = len(cancel_result.get("cancelled_orders", []))
             lines.append(f"{symbol}: CLOSE ({exit_reason}, unrealized_plpc={unrealized_plpc:.2f}%, cancelled {n_cancelled} bracket leg(s)) -> {result}")
+            if result.get("placed"):
+                _notify_trade(
+                    f"Day Trader — SOLD {symbol}",
+                    f"SOLD {qty} {symbol}\nReason: {exit_reason}\nUnrealized P/L at close: {unrealized_plpc:.2f}%\nPrice: {last_price}\nOrder: {json.dumps(result, indent=2)}",
+                    lines,
+                )
         else:
             managed_by = "the broker-side bracket order" if is_bracket else "this agent's own manual check (fractional position)"
             lines.append(f"{symbol}: hold open position (unrealized_plpc={unrealized_plpc:.2f}% — stop/take-profit managed by {managed_by})")
@@ -280,6 +302,11 @@ def run():
 
         if result.get("placed"):
             open_count += 1
+            _notify_trade(
+                f"Day Trader — BOUGHT {symbol}",
+                f"BOUGHT {qty} {symbol} ({order_kind}) @ ~{limit_price}\nStop-loss: {signal['stop_price']}\nTake-profit: {signal['tp_price']}\nRSI(14): {signal['rsi14']}\nSizing: {binding}\nOrder: {json.dumps(result, indent=2)}",
+                lines,
+            )
 
     _append_journal(lines, envelopes)
 

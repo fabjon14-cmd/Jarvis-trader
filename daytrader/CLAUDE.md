@@ -577,6 +577,32 @@ pre-existing gap and needs the same fix — flagged as a separate follow-up
 rather than changed inline here, since that's a currently-live trading
 workflow this session wasn't otherwise touching.
 
+## Hourly email digest (added 2026-08-08)
+
+Mirrors the crypto scalper's `hourly_digest.py` exactly, adapted for a
+shared account: `scripts/hourly_digest.py` reads Alpaca's own order
+history for the last 60 minutes, filtered to `WATCHLIST_SYMBOLS` (not
+"any order on this account" — the crypto scalper's own activity would
+otherwise show up too, see "Sharing the crypto scalper's Alpaca
+account"), and emails a summary via the shared `../../scripts/notify.py`
+— but only if something actually happened; a quiet hour sends nothing
+(no heartbeat spam).
+
+Driven by another local launchd timer, not GitHub's `schedule:` —
+`~/Library/LaunchAgents/com.jarvis-trader.daytrader-digest-trigger.plist`
+(`StartInterval: 3600`) runs `~/actions-runner/trigger-daytrader-digest.sh`,
+which calls `gh workflow run daytrader-hourly-digest.yml`. Same reasoning
+as the main trading trigger: GitHub's own cron dispatch already proved
+unreliable once (see "Local launchd trigger" above) — no reason to trust
+it here either, even though a late digest email is lower-stakes than a
+missed trading cycle.
+
+Uses the same `RESEND_API_KEY`/`REPORT_TO_EMAIL` secrets as both other
+bots — no new credentials needed. `daytrader-hourly-digest.yml` also
+supports a `test: true` manual input that sends a one-off confirmation
+email without touching Alpaca at all, for verifying the email path works
+independent of any real trade activity.
+
 ## Manual order-placement verification (added 2026-08-07)
 
 Every live run so far had been a hold — the strategy's actual entry

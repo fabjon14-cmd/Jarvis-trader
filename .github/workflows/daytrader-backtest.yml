@@ -31,6 +31,10 @@ on:
         description: "Set to 'true' to report Alpaca's market clock (is_open/next_open/next_close) instead of running the strategy"
         required: false
         default: ""
+      account:
+        description: "Set to 'true' to report account equity/buying_power instead of running the strategy"
+        required: false
+        default: ""
 
 # Runs on the same self-hosted runner as daytrader.yml (added 2026-08-07)
 # — GitHub's hosted pool queued this workflow for 15+ minutes multiple
@@ -58,6 +62,8 @@ jobs:
         run: |
           if [ "${{ github.event.inputs.clock }}" = "true" ]; then
             python3 daytrader/scripts/research.py clock
+          elif [ "${{ github.event.inputs.account }}" = "true" ]; then
+            python3 daytrader/scripts/research.py account
           elif [ -n "${{ github.event.inputs.detail_symbol }}" ]; then
             python3 daytrader/scripts/backtest.py detail "${{ github.event.inputs.detail_symbol }}" "${{ github.event.inputs.lookback_days || 30 }}"
           elif [ "${{ github.event.inputs.atr_check }}" = "true" ]; then

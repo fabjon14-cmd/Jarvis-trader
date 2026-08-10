@@ -1,0 +1,39 @@
+name: Day Trader Hourly Digest
+
+# No `schedule:` trigger — GitHub's own cron dispatch proved unreliable
+# for the main trading workflow (see daytrader/CLAUDE.md "Local launchd
+# trigger"), so this is driven by the same local launchd timer approach
+# instead: ~/Library/LaunchAgents/com.jarvis-trader.daytrader-digest-trigger.plist
+# fires this hourly via `gh workflow run`. workflow_dispatch stays
+# available for manual runs / the --test mode below.
+on:
+  workflow_dispatch:
+    inputs:
+      test:
+        description: "Send a one-off test email instead of checking real activity"
+        required: false
+        default: "false"
+
+jobs:
+  digest:
+    runs-on: [self-hosted, macOS, trading-bots]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: python3 -m pip install --break-system-packages -q requests python-dotenv
+
+      - name: Build and send digest
+        env:
+          DAYTRADER_APCA_API_KEY_ID: ${{ secrets.CRYPTO_APCA_API_KEY_ID }}
+          DAYTRADER_APCA_API_SECRET_KEY: ${{ secrets.CRYPTO_APCA_API_SECRET_KEY }}
+          DAYTRADER_APCA_BASE_URL: ${{ secrets.CRYPTO_APCA_BASE_URL }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          REPORT_TO_EMAIL: ${{ secrets.REPORT_TO_EMAIL }}
+        run: |
+          if [ "${{ github.event.inputs.test }}" = "true" ]; then
+            python3 daytrader/scripts/hourly_digest.py --test
+          else
+            python3 daytrader/scripts/hourly_digest.py
+          fi

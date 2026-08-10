@@ -281,10 +281,50 @@ bracket order can express — those two exits still require this agent's
 the bracket's still-resting SL/TP legs *before* the manual sell is
 submitted — otherwise the resting child orders would hold qty against
 (or conflict with) the manual exit, since Alpaca has no way to know a
-signal-based exit supersedes the bracket. `agent/daytrader_agent.py`'s
-exit loop no longer checks `unrealized_plpc` against stop/TP thresholds
-at all — those two paths are entirely broker-managed now; the loop only
-handles the two exits a bracket can't do.
+signal-based exit supersedes the bracket.
+
+## Fractional-share fallback (fixed 2026-08-08 — real trades were silently failing)
+
+**Every real signal that fired on 2026-08-07 (DIS and V, both during the
+afternoon entry window) was rejected by Alpaca** — not held, not
+skipped, actually rejected: `"fractional orders must be simple orders"`
+(code 42210000). Root cause: this account's equity is **$1,000.32**
+(shared with the crypto scalper), so `PER_TRADE_PCT_CAP` (1%) computes
+to about $10 per trade — a fraction of a share for every $100+ symbol on
+the watchlist (0.0953 shares of DIS, 0.0275 of V). Bracket orders don't
+support fractional quantities on Alpaca at all; only plain orders do.
+This meant every trade this account could actually afford was
+guaranteed to fail, silently from the strategy's perspective (it logged
+`NEW_TRADE` and a clean rejection reason, so nothing crashed — it just
+never actually traded, which is why it looked like "no signal fired"
+until the journal was read closely).
+
+**Fix**: `agent/daytrader_agent.py`'s entry logic now branches on the
+computed quantity:
+- `qty >= 1` → unchanged: floor to a whole share count, bracket order,
+  broker-managed stop/TP.
+- `0 < qty < 1` → plain (non-bracket) order at the fractional quantity,
+  with the ATR-derived stop/TP packed into `client_order_id` via
+  `research.encode_trade_params()` (`dt-sl10458-tp10514` = stop $104.58,
+  TP $105.14) — the exact same technique the crypto scalper already uses
+  for the identical "no broker-side place to persist per-trade exit
+  levels" problem, just with prices instead of percentages since these
+  are already ATR-derived absolute prices.
+
+The exit loop now checks `research.has_open_bracket_legs(symbol)` first:
+if true, unchanged (crossunder/EOD only, bracket handles SL/TP). If
+false, it also manually checks the position's current price against the
+decoded stop/TP from its entry order's `client_order_id` — restoring the
+polling-based check bracket orders were meant to replace, but only for
+positions that couldn't use a bracket order in the first place.
+
+**Given this account's size, expect most real trades here to use the
+fractional/plain path, not bracket orders** — the watchlist is all
+$100+ large-caps, and $1,000 × 1% ≈ $10 rarely buys a whole share of any
+of them. Bracket orders only actually apply on this account for the
+cheaper symbols (XOM, DIS) if the position-size cap is ever raised, or
+if account equity grows. Worth knowing before assuming "it's using
+bracket orders" without checking `order_kind` in the journal.
 
 ## ATR volatility filter (2026-08-07, operator's suggestion)
 
@@ -536,6 +576,58 @@ of failing the job outright. `crypto-scalper.yml` has the identical
 pre-existing gap and needs the same fix — flagged as a separate follow-up
 rather than changed inline here, since that's a currently-live trading
 workflow this session wasn't otherwise touching.
+
+## Immediate per-trade email notifications (added 2026-08-08)
+
+On top of the hourly digest below, `agent/daytrader_agent.py` now emails
+immediately — same run, right after the order is confirmed placed — for
+every buy and every sell it executes itself: `NEW_TRADE` (entry, either
+`order_kind`) and `CLOSE` (crossunder, forced EOD flatten, or a manually-
+checked stop-loss/take-profit on a fractional position). `_notify_trade()`
+wraps the send in try/except so a notification failure (Resend down, bad
+credentials) can never break or block the actual trade — it's a side
+effect of the trading logic, never a dependency of it.
+
+**Real gap, not a bug**: a whole-share position's stop-loss/take-profit
+is filled by the broker directly (see "Bracket orders") — the agent's
+own code never executes that sell, so there's no point in this code path
+to hook an immediate notification for it. The DIS test trade closed
+exactly this way (broker-side take-profit fill, no `CLOSE` line in the
+journal at all) and would NOT have triggered an immediate email under
+this design — only the hourly digest below would catch it, within up to
+60 minutes. Given this account's size, most real trades will use the
+fractional path (which the agent does execute directly, so immediate
+notification does apply) — but if the position-size cap or account
+equity ever grows enough that bracket/whole-share trades become common,
+this gap gets more relevant and may be worth closing (e.g. having the
+exit loop diff "positions open last run" vs "positions open now" to
+catch broker-side fills the agent didn't initiate itself).
+
+## Hourly email digest (added 2026-08-08)
+
+Mirrors the crypto scalper's `hourly_digest.py` exactly, adapted for a
+shared account: `scripts/hourly_digest.py` reads Alpaca's own order
+history for the last 60 minutes, filtered to `WATCHLIST_SYMBOLS` (not
+"any order on this account" — the crypto scalper's own activity would
+otherwise show up too, see "Sharing the crypto scalper's Alpaca
+account"), and emails a summary via the shared `../../scripts/notify.py`
+— but only if something actually happened; a quiet hour sends nothing
+(no heartbeat spam).
+
+Driven by another local launchd timer, not GitHub's `schedule:` —
+`~/Library/LaunchAgents/com.jarvis-trader.daytrader-digest-trigger.plist`
+(`StartInterval: 3600`) runs `~/actions-runner/trigger-daytrader-digest.sh`,
+which calls `gh workflow run daytrader-hourly-digest.yml`. Same reasoning
+as the main trading trigger: GitHub's own cron dispatch already proved
+unreliable once (see "Local launchd trigger" above) — no reason to trust
+it here either, even though a late digest email is lower-stakes than a
+missed trading cycle.
+
+Uses the same `RESEND_API_KEY`/`REPORT_TO_EMAIL` secrets as both other
+bots — no new credentials needed. `daytrader-hourly-digest.yml` also
+supports a `test: true` manual input that sends a one-off confirmation
+email without touching Alpaca at all, for verifying the email path works
+independent of any real trade activity.
 
 ## Manual order-placement verification (added 2026-08-07)
 

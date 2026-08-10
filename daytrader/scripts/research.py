@@ -19,6 +19,7 @@
 # same endpoint/pattern as the equities Trader's scripts/research.py.
 
 import os
+import re
 import sys
 import json
 from datetime import datetime, timedelta, timezone
@@ -319,6 +320,56 @@ def compute_atr_based_stop_tp(entry_price, atr14):
     stop_price = entry_price - (ATR_STOP_MULTIPLIER * atr14)
     tp_price = entry_price + (ATR_TP_MULTIPLIER * atr14)
     return stop_price, tp_price
+
+
+def encode_trade_params(stop_price, tp_price):
+    """Packs a plain (non-bracket) order's ATR-derived stop/TP prices into
+    the entry order's client_order_id.
+
+    Needed because Alpaca rejects fractional-quantity bracket orders
+    ('fractional orders must be simple orders', confirmed 2026-08-07 —
+    this account's $1,000 equity means a 1%-of-account position is under
+    1 share for every $100+ watchlist symbol, so EVERY trade this account
+    can actually afford was being rejected). Sub-1-share entries fall back
+    to a plain order instead, which means there's no broker-side bracket
+    leg to recover the stop/TP from later — so they're persisted here,
+    same technique the crypto scalper already uses for the identical
+    problem. Encoded in cents to avoid float-formatting ambiguity."""
+    return f"dt-sl{round(stop_price * 100)}-tp{round(tp_price * 100)}"
+
+
+def decode_trade_params(client_order_id):
+    """Inverse of encode_trade_params(). Returns None if client_order_id
+    is missing or wasn't produced by it (e.g. a bracket-order entry, which
+    doesn't need this — its stop/TP live as broker-managed child orders)."""
+    if not client_order_id:
+        return None
+    m = re.match(r"^dt-sl(-?\d+)-tp(-?\d+)$", client_order_id)
+    if not m:
+        return None
+    return {"stop_price": int(m.group(1)) / 100, "tp_price": int(m.group(2)) / 100}
+
+
+def get_position_entry_order(symbol):
+    """Most recent filled BUY order for this symbol — used to recover a
+    plain-order position's encoded stop/TP (see decode_trade_params)."""
+    for o in get_orders(status="closed", limit=200):
+        if o.get("symbol") == symbol and o.get("side") == "buy" and o.get("status") == "filled":
+            return o
+    return None
+
+
+def has_open_bracket_legs(symbol):
+    """True if `symbol` currently has an open bracket-order child leg
+    (stop_loss/take_profit) — i.e. its entry was a whole-share bracket
+    order and the broker is still managing its exit. False for a plain
+    fractional-qty entry, which has no such legs (see encode_trade_params
+    for why fractional entries can't use bracket orders at all)."""
+    url = f"{BASE_URL}/v2/orders"
+    params = {"status": "open", "symbols": symbol}
+    response = requests.get(url, headers=_headers(), params=params, timeout=REQUEST_TIMEOUT)
+    response.raise_for_status()
+    return any(o.get("order_class") == "bracket" for o in response.json())
 
 
 def get_exit_crossunder(symbol, timeframe="5Min", limit=150):

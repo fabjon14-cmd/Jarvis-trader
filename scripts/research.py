@@ -223,6 +223,26 @@ def get_stop_loss_flags():
     return flags
 
 
+def get_take_profit_flags():
+    """Per-position mechanical take-profit, mirroring get_stop_loss_flags()
+    but on the upside — fires on price alone, independent of any research
+    judgment about whether a winner still has room to run. +25% from cost
+    basis: trim to half (bank some gain, let the rest keep riding). +40%:
+    close entirely. Uses Alpaca's own unrealized_plpc, same as stop-loss."""
+    flags = []
+    for p in get_positions():
+        plpc = float(p.get("unrealized_plpc", 0)) * 100
+        action = "close" if plpc >= 40 else ("trim_half" if plpc >= 25 else None)
+        if action:
+            flags.append({
+                "symbol": p.get("symbol"),
+                "qty": float(p.get("qty", 0)),
+                "unrealized_plpc": round(plpc, 2),
+                "action": action,
+            })
+    return flags
+
+
 _SECTOR_MAP = None
 
 
@@ -372,6 +392,8 @@ if __name__ == "__main__":
         print(json.dumps(get_circuit_breaker_status()))
     elif action == "stop-loss":
         print(json.dumps(get_stop_loss_flags()))
+    elif action == "take-profit":
+        print(json.dumps(get_take_profit_flags()))
     elif action == "sector" and symbol:
         print(json.dumps(check_sector_cap(symbol)))
     elif action == "deployed":

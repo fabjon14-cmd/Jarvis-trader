@@ -1,0 +1,55 @@
+name: Day Trader Weekly Review
+
+# No `schedule:` trigger — same reasoning as daytrader.yml (see
+# daytrader/CLAUDE.md "Local launchd trigger"): GitHub's own cron dispatch
+# already proved unreliable this session, so this is driven by a local
+# launchd job on the operator's Mac instead (Fridays ~20:30 UTC, matching
+# both other bots' review cadence) via `gh workflow run`.
+# Quantitative-only rollup (win rate, realized P&L, SPY benchmark) — see
+# daytrader/scripts/review.py.
+on:
+  workflow_dispatch:
+    inputs:
+      period_days:
+        description: "Lookback window in days"
+        required: false
+        default: "7"
+
+permissions:
+  contents: write
+
+jobs:
+  run-review:
+    runs-on: [self-hosted, macOS, trading-bots]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: python3 -m pip install --break-system-packages -q requests python-dotenv
+
+      - name: Run review
+        env:
+          DAYTRADER_APCA_API_KEY_ID: ${{ secrets.CRYPTO_APCA_API_KEY_ID }}
+          DAYTRADER_APCA_API_SECRET_KEY: ${{ secrets.CRYPTO_APCA_API_SECRET_KEY }}
+          DAYTRADER_APCA_BASE_URL: ${{ secrets.CRYPTO_APCA_BASE_URL }}
+        run: python3 daytrader/scripts/review.py write "${{ github.event.inputs.period_days || 7 }}"
+
+      - name: Commit review
+        run: |
+          git config user.name "daytrader-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add daytrader/reviews/
+          if git diff --staged --quiet; then
+            echo "No review changes to commit."
+          else
+            git commit -m "Day trader weekly review $(date -u +'%Y-%m-%d')"
+            for i in 1 2 3 4 5; do
+              if git push; then
+                break
+              fi
+              echo "Push rejected (attempt $i/5) — rebasing onto latest origin/main and retrying."
+              git pull --rebase origin main
+              sleep $((RANDOM % 5 + 1))
+            done
+          fi

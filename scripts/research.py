@@ -226,13 +226,13 @@ def get_stop_loss_flags():
 def get_take_profit_flags():
     """Per-position mechanical take-profit, mirroring get_stop_loss_flags()
     but on the upside — fires on price alone, independent of any research
-    judgment about whether a winner still has room to run. +25% from cost
+    judgment about whether a winner still has room to run. +15% from cost
     basis: trim to half (bank some gain, let the rest keep riding). +40%:
     close entirely. Uses Alpaca's own unrealized_plpc, same as stop-loss."""
     flags = []
     for p in get_positions():
         plpc = float(p.get("unrealized_plpc", 0)) * 100
-        action = "close" if plpc >= 40 else ("trim_half" if plpc >= 25 else None)
+        action = "close" if plpc >= 40 else ("trim_half" if plpc >= 15 else None)
         if action:
             flags.append({
                 "symbol": p.get("symbol"),

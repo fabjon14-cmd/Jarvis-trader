@@ -158,14 +158,15 @@ sat on a double-digit unrealized gain for weeks with no rule that would
 ever bank it). Check `scripts/research.py take-profit` at the start of
 every Trading Session run, same as stop-loss: if it flags a position, you
 MUST act on it (not "may"), same run:
-- **+25%** from cost basis → trim the position to half its current size.
+- **+15%** from cost basis → trim the position to half its current size
+  (lowered from +25% on 2026-08-18 — banks gains earlier; ORCL peaked at
+  +18.19% unrealized on 2026-08-10 and would have been trimmed under this
+  threshold).
 - **+40%** from cost basis → close the position entirely.
-This is deliberately wider than the -15%/-25% stop-loss (cut losses
-faster, let winners run further) rather than symmetric. Log the trigger
-level and the resulting order in the journal, same as stop-loss. A
-position can be flagged by stop-loss or take-profit but never both at
-once (they're on opposite sides of cost basis) — if neither fires, no
-action from this rule.
+Log the trigger level and the resulting order in the journal, same as
+stop-loss. A position can be flagged by stop-loss or take-profit but
+never both at once (they're on opposite sides of cost basis) — if
+neither fires, no action from this rule.
 
 ### Sector cap
 

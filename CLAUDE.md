@@ -161,14 +161,14 @@ picking a different sizing.
 
 ### Daily/weekly aggregate deployment cap
 
-Max **$500** total buy notional per trading day. Weekly cap is currently
-**$3,000** per rolling 7-day window (`TRADER_WEEKLY_NOTIONAL_CAP` env var) —
-raised from the original $1,000 as a deliberate, temporary trial starting
-2026-07-30, after the $1,000 default blocked all new buying for the rest of
-the week following a single $1,702.50 fill. Reassess around **2026-08-05**
-(when that original fill rolls off the 7-day window anyway) whether $3,000 is
-the right steady-state number or the trial should revert to $1,000 — this is
-not meant to be a silent permanent increase.
+Max **$500** total buy notional per trading day. Weekly cap is **$1,000** per
+rolling 7-day window (`TRADER_WEEKLY_NOTIONAL_CAP` env var). This was
+temporarily raised to a $3,000 trial from 2026-07-30, with reassessment due
+2026-08-05 — that date passed without a decision (flagged repeatedly in
+journal entries through 8/17), and the operator reverted it back to $1,000
+on 2026-08-18 after reviewing the trial period's catch-up performance
+review. Not meant to change again without a deliberate decision, same as
+before.
 
 Tracked as a running total from actual order history (`scripts/research.py
 deployed`), not reset by each fresh routine run — caps how much new capital

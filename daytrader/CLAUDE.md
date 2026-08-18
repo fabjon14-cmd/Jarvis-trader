@@ -603,6 +603,35 @@ this gap gets more relevant and may be worth closing (e.g. having the
 exit loop diff "positions open last run" vs "positions open now" to
 catch broker-side fills the agent didn't initiate itself).
 
+## Weekly performance review (added 2026-08-18)
+
+`scripts/review.py` mirrors the crypto scalper's `review.py` — win rate,
+realized P&L, orders placed/filled/rejected, and a SPY buy-and-hold
+benchmark, computed from Alpaca's own order/portfolio history, not the
+journal's prose. Round-trips are matched simple buy→sell pairs (safe
+because of the no-averaging-in rule — never more than one open position
+per symbol to match against), filtered to `WATCHLIST_SYMBOLS` since the
+account is shared with the crypto scalper.
+
+**One real caveat**: `shared_account_equity_change_pct` reflects the
+*whole* account, crypto scalper activity included — Alpaca has no
+per-strategy equity curve. `realized_pnl` (summed from daytrader's own
+matched round-trips) is the reliable number; the equity-change and SPY-
+comparison figures are directional context only, not a clean
+daytrader-only return. Called out explicitly in the rendered review so
+it isn't mistaken for a precise number.
+
+Runs via `.github/workflows/daytrader-review.yml`
+(`review.py write PERIOD_DAYS`, writes `reviews/YYYY-MM-DD.md`) or
+on-demand through `daytrader-backtest.yml`'s `review_days` input
+(`review.py show`, prints without writing/committing). Driven by a local
+launchd job — `~/Library/LaunchAgents/com.jarvis-trader.daytrader-review-trigger.plist`,
+Fridays ~21:30 UK local time (matches 20:30 UTC during BST; drifts to
+21:30 UTC once GMT resumes in late October — not worth a twice-yearly
+plist edit for a weekly summary's timing, unlike the 5-minute trading
+loop where timing actually matters) — not GitHub's `schedule:`, same
+reasoning as every other trigger in this project now.
+
 ## Hourly email digest (added 2026-08-08)
 
 Mirrors the crypto scalper's `hourly_digest.py` exactly, adapted for a

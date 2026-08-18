@@ -7,7 +7,7 @@ account without deliberately deciding to.
 
 ## Tools available
 
-- `scripts/research.py` — `account | positions | bars SYMBOL | news SYMBOL | orders [STATUS] | portfolio [PERIOD] | earnings SYMBOL | movers [TOP] | circuit-breaker | stop-loss | sector SYMBOL | deployed | day-trades` (read-only)
+- `scripts/research.py` — `account | positions | bars SYMBOL | news SYMBOL | orders [STATUS] | portfolio [PERIOD] | earnings SYMBOL | movers [TOP] | circuit-breaker | stop-loss | take-profit | sector SYMBOL | deployed | day-trades` (read-only)
 - `scripts/trade.py` — `status | order SYMBOL QTY SIDE [LIMIT_PRICE] | cancel`
 - `scripts/notify.py "SUBJECT" FILE_PATH` — emails FILE_PATH's contents as the body via Resend, to `REPORT_TO_EMAIL`. Run this as the last step of every scheduled routine, pointing at the file (or section) it just wrote, so the operator gets the full report by email, not just a "ran" ping.
 - `watchlist.json` — the list of symbols in scope; don't trade outside it without being told to.
@@ -149,6 +149,25 @@ run: if it flags a position, you MUST act on it (not "may"), same run:
 - **-25%** from cost basis → close the position entirely.
 Log the trigger level and the resulting order in the journal.
 
+### Per-position take-profit
+
+Mirrors the stop-loss above, on the upside — mechanical, fires on price
+alone, independent of any research judgment about whether a winner still
+has room to run (added 2026-08-18 after the catch-up review noted ORCL
+sat on a double-digit unrealized gain for weeks with no rule that would
+ever bank it). Check `scripts/research.py take-profit` at the start of
+every Trading Session run, same as stop-loss: if it flags a position, you
+MUST act on it (not "may"), same run:
+- **+15%** from cost basis → trim the position to half its current size
+  (lowered from +25% on 2026-08-18 — banks gains earlier; ORCL peaked at
+  +18.19% unrealized on 2026-08-10 and would have been trimmed under this
+  threshold).
+- **+40%** from cost basis → close the position entirely.
+Log the trigger level and the resulting order in the journal, same as
+stop-loss. A position can be flagged by stop-loss or take-profit but
+never both at once (they're on opposite sides of cost basis) — if
+neither fires, no action from this rule.
+
 ### Sector cap
 
 No more than 2 of the (up to 5) open positions may be in the same sector
@@ -161,14 +180,14 @@ picking a different sizing.
 
 ### Daily/weekly aggregate deployment cap
 
-Max **$500** total buy notional per trading day. Weekly cap is currently
-**$3,000** per rolling 7-day window (`TRADER_WEEKLY_NOTIONAL_CAP` env var) —
-raised from the original $1,000 as a deliberate, temporary trial starting
-2026-07-30, after the $1,000 default blocked all new buying for the rest of
-the week following a single $1,702.50 fill. Reassess around **2026-08-05**
-(when that original fill rolls off the 7-day window anyway) whether $3,000 is
-the right steady-state number or the trial should revert to $1,000 — this is
-not meant to be a silent permanent increase.
+Max **$500** total buy notional per trading day. Weekly cap is **$1,000** per
+rolling 7-day window (`TRADER_WEEKLY_NOTIONAL_CAP` env var). This was
+temporarily raised to a $3,000 trial from 2026-07-30, with reassessment due
+2026-08-05 — that date passed without a decision (flagged repeatedly in
+journal entries through 8/17), and the operator reverted it back to $1,000
+on 2026-08-18 after reviewing the trial period's catch-up performance
+review. Not meant to change again without a deliberate decision, same as
+before.
 
 Tracked as a running total from actual order history (`scripts/research.py
 deployed`), not reset by each fresh routine run — caps how much new capital

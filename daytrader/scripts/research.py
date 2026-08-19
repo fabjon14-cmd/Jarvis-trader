@@ -73,13 +73,22 @@ ATR_SMA_PERIOD = int(os.getenv("DAYTRADER_ATR_SMA_PERIOD", "20"))
 # recoverable ATR-based levels.
 STOP_LOSS_PCT = float(os.getenv("DAYTRADER_STOP_LOSS_PCT", "1.0"))
 TAKE_PROFIT_PCT = float(os.getenv("DAYTRADER_TAKE_PROFIT_PCT", "2.0"))
-# "Risk a maximum of 1% of the total account balance per trade" — a
-# position-size cap, not a stop-distance-scaled dollar-risk target. See
-# CLAUDE.md "Position sizing" for why this matters. Deliberately NOT tied
-# to the ATR-based stop distance above — see CLAUDE.md "Why position
-# sizing stays decoupled from the ATR stop" for why coupling them (as
-# originally proposed) blows up to 200-650% of account per trade.
+# Original spec: "risk a maximum of 1% of the total account balance per
+# trade" — kept here for its own documentation value, but no longer what
+# drives sizing (see FIXED_TRADE_NOTIONAL below). Deliberately NOT tied to
+# the ATR-based stop distance above — see CLAUDE.md "Why position sizing
+# stays decoupled from the ATR stop" for why coupling them (as originally
+# proposed) blows up to 200-650% of account per trade.
 PER_TRADE_PCT_CAP = float(os.getenv("DAYTRADER_PER_TRADE_PCT_CAP", "1.0"))
+# Fixed per-trade sizing (changed 2026-08-18, operator's explicit choice,
+# replacing PER_TRADE_PCT_CAP as what actually drives sizing): ~£100,
+# approximated as $126 at the GBP/USD rate on this date, since Alpaca
+# doesn't offer GBP-denominated US equity accounts. This raises per-trade
+# risk from ~1% to ~12-13% of this account's ~$1,000 balance — a
+# deliberate ~12x increase, confirmed by the operator after being shown
+# the implication (up to ~half the account deployed across 5 concurrent
+# positions instead of ~5%). See CLAUDE.md "Fixed £100 per-trade sizing".
+FIXED_TRADE_NOTIONAL = float(os.getenv("DAYTRADER_FIXED_TRADE_NOTIONAL", "126"))
 DAILY_DRAWDOWN_LIMIT_PCT = float(os.getenv("DAYTRADER_DAILY_DRAWDOWN_LIMIT_PCT", "3.0"))
 
 # Time-of-day filter (added 2026-08-07): new entries only inside these two
@@ -387,20 +396,20 @@ def get_exit_crossunder(symbol, timeframe="5Min", limit=150):
     return prev_fast >= prev_slow and curr_fast < curr_slow
 
 
-def compute_position_qty(entry_price, account_balance):
-    """Position size = PER_TRADE_PCT_CAP of total account balance (default
-    1%), per the operator's spec: 'risk a maximum of 1% of the total
-    account balance per trade' — a straightforward position-size cap, same
-    phrasing pattern as the equities Trader's '5% of buying power per
-    symbol'. Combined with the 1% stop-loss, actual dollar loss if stopped
-    out is ~1% x 1% = 0.01% of the account — conservative by construction,
-    not the full-account sizing an earlier (incorrect) reading of this
-    would have produced. See CLAUDE.md 'Position sizing' for that history.
+def compute_position_qty(entry_price, account_balance=None):
+    """Position size = FIXED_TRADE_NOTIONAL (~£100 / $126) per trade,
+    changed 2026-08-18 from the original PER_TRADE_PCT_CAP (1%-of-balance)
+    formula — see CLAUDE.md 'Fixed £100 per-trade sizing' for the full
+    reasoning and the ~12x risk-per-trade increase this represents.
+    `account_balance` is accepted for call-site/signature compatibility
+    only; it no longer drives the computed quantity. `trade.MAX_ORDER_NOTIONAL`
+    ($500) still applies as a secondary ceiling at the call site, same as
+    before — $126 doesn't hit it under normal conditions, but it stays as
+    a layered backstop.
     """
-    target_notional = (PER_TRADE_PCT_CAP / 100) * account_balance
     if entry_price <= 0:
         return 0.0
-    return target_notional / entry_price
+    return FIXED_TRADE_NOTIONAL / entry_price
 
 
 def get_circuit_breaker_status():

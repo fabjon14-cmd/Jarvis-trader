@@ -205,14 +205,50 @@ Under the correct reading there's no contradiction: position size = 1% of
 account balance, stop-loss = 1% below entry, so realized loss if stopped
 out is ≈1% × 1% = 0.01% of the account — conservative, not aggressive.
 
-**Implementation**: `research.compute_position_qty()` computes
-`(PER_TRADE_PCT_CAP / 100) × account_balance / entry_price` directly — no
-stop-distance term. `DAYTRADER_MAX_ORDER_NOTIONAL` (default $500) still
-applies as a secondary dollar ceiling, since 1% of a large account could
-still be a large single trade — whichever of the two is smaller actually
-binds, logged per trade as `binding_constraint` in the `NEW_TRADE`
-journal entry (`per_trade_pct_cap` or `max_order_notional`), so it's
-answerable from the journal which one governed a given trade's size.
+**Implementation (as originally built 2026-08-07)**: `research.
+compute_position_qty()` computed `(PER_TRADE_PCT_CAP / 100) ×
+account_balance / entry_price` directly — no stop-distance term.
+`DAYTRADER_MAX_ORDER_NOTIONAL` (default $500) applied as a secondary
+dollar ceiling — whichever of the two was smaller actually bound. See
+"Fixed £100 per-trade sizing" below for what replaced this on 2026-08-18.
+
+## Fixed £100 per-trade sizing (2026-08-18, operator's explicit choice, replaces the 1% cap above)
+
+The operator asked to size trades at a fixed **£100 per trade** instead
+of the 1%-of-balance cap above. Since this account is USD-denominated
+(Alpaca doesn't offer GBP-denominated US equity accounts), this became a
+fixed **$126** target (the GBP/USD rate on 2026-08-18) — a static dollar
+figure, not a live FX conversion, so it will drift from true £100
+equivalence as the exchange rate moves over time; revisit
+`DAYTRADER_FIXED_TRADE_NOTIONAL` periodically if that drift matters.
+
+**This is a real, confirmed ~12x increase in risk per trade** — 1% of
+this account's ~$1,000 balance was ~$10; $126 is ~12-13% of it. Flagged
+explicitly before making the change (via a clarifying question covering
+both the USD-conversion question and the risk-size question), and the
+operator confirmed proceeding with both eyes open: up to ~half the
+account can now be deployed across 5 concurrent positions, versus ~5%
+under the old 1% cap. Not a mistake to "fix" later — a deliberate choice
+made with the numbers in front of the operator, same standard as every
+other risk-parameter change in this project.
+
+**Implementation**: `research.compute_position_qty()` now computes
+`FIXED_TRADE_NOTIONAL / entry_price` directly (the `account_balance`
+parameter is still accepted for call-site compatibility but no longer
+used). `DAYTRADER_MAX_ORDER_NOTIONAL` ($500) still applies as a secondary
+ceiling and doesn't bind under normal conditions (126 < 500) — kept as a
+layered backstop, not removed. `binding_constraint` in the journal is now
+`fixed_trade_notional` or `max_order_notional` (renamed from
+`per_trade_pct_cap` to match).
+
+**Side effect worth knowing**: at $126/trade, DIS (~$105-110) now floors
+to a whole share (1.2 shares → 1) and uses a bracket order — the first
+watchlist symbol where that happens routinely instead of only via the
+one-off qty=1 test order. Every other watchlist symbol ($150+) still
+computes fractional and uses the plain-order path. See "Fractional-share
+fallback" above for why that split exists and what it means for
+notification timing (bracket-managed exits don't get an immediate email,
+only the hourly digest catches those).
 
 ## ATR-based stop/take-profit (2026-08-07, operator's suggestion)
 

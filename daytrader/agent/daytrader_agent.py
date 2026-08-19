@@ -251,15 +251,15 @@ def run():
             continue
 
         entry_price = signal["last_price"]
-        # PER_TRADE_PCT_CAP (default 1%) of total account balance — the
-        # operator's spec, taken literally as a position-size cap. Backed
-        # by MAX_ORDER_NOTIONAL as a secondary dollar ceiling (matters more
-        # on a large account, where 1% could still be a large dollar
-        # amount) — whichever is smaller actually binds, logged below.
-        pct_cap_qty = research.compute_position_qty(entry_price, equity)
+        # FIXED_TRADE_NOTIONAL (~£100 / $126) per trade — changed
+        # 2026-08-18 from the original 1%-of-balance cap, operator's
+        # explicit choice (see CLAUDE.md "Fixed £100 per-trade sizing").
+        # Backed by MAX_ORDER_NOTIONAL as a secondary dollar ceiling —
+        # whichever is smaller actually binds, logged below.
+        fixed_notional_qty = research.compute_position_qty(entry_price, equity)
         notional_cap_qty = trade.MAX_ORDER_NOTIONAL / entry_price
-        raw_qty = min(pct_cap_qty, notional_cap_qty)
-        binding = "per_trade_pct_cap" if pct_cap_qty <= notional_cap_qty else "max_order_notional"
+        raw_qty = min(fixed_notional_qty, notional_cap_qty)
+        binding = "fixed_trade_notional" if fixed_notional_qty <= notional_cap_qty else "max_order_notional"
 
         if raw_qty <= 0:
             lines.append(f"{symbol}: signal qualified but computed qty was 0 — hold.")
@@ -288,8 +288,8 @@ def run():
 
         envelope["action"] = "NEW_TRADE"
         envelope["position_sizing"] = {
-            "per_trade_pct_cap": research.PER_TRADE_PCT_CAP,
-            "pct_cap_qty": round(pct_cap_qty, 4),
+            "fixed_trade_notional": research.FIXED_TRADE_NOTIONAL,
+            "fixed_notional_qty": round(fixed_notional_qty, 4),
             "notional_cap_qty": round(notional_cap_qty, 4),
             "binding_constraint": binding,
             "qty": qty,

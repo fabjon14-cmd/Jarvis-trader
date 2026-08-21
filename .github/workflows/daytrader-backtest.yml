@@ -81,13 +81,7 @@ jobs:
           elif [ -n "${{ github.event.inputs.review_days }}" ]; then
             python3 daytrader/scripts/review.py show "${{ github.event.inputs.review_days }}"
           elif [ "${{ github.event.inputs.positions }}" = "true" ]; then
-            python3 -c "
-import sys; sys.path.insert(0, 'daytrader/scripts')
-import json, research
-from trade import WATCHLIST_SYMBOLS
-positions = [p for p in research.get_positions() if p.get('symbol') in WATCHLIST_SYMBOLS]
-print(json.dumps(positions, indent=2))
-"
+            python3 -c "import sys; sys.path.insert(0, 'daytrader/scripts'); import json, research; from trade import WATCHLIST_SYMBOLS; print(json.dumps([p for p in research.get_positions() if p.get('symbol') in WATCHLIST_SYMBOLS], indent=2))"
           elif [ -n "${{ github.event.inputs.detail_symbol }}" ]; then
             python3 daytrader/scripts/backtest.py detail "${{ github.event.inputs.detail_symbol }}" "${{ github.event.inputs.lookback_days || 30 }}"
           elif [ "${{ github.event.inputs.atr_check }}" = "true" ]; then

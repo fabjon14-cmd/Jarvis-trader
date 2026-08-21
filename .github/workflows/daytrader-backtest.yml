@@ -43,6 +43,10 @@ on:
         description: "Set to a number of days to run a performance review (win rate, realized P&L, SPY benchmark) over that period instead of running the strategy"
         required: false
         default: ""
+      positions:
+        description: "Set to 'true' to report currently open positions, filtered to this bot's own watchlist (excludes crypto scalper's positions on the shared account), instead of running the strategy"
+        required: false
+        default: ""
 
 # Runs on the same self-hosted runner as daytrader.yml (added 2026-08-07)
 # — GitHub's hosted pool queued this workflow for 15+ minutes multiple
@@ -76,6 +80,8 @@ jobs:
             python3 daytrader/scripts/research.py orders all | python3 -c "import json,sys; orders=json.load(sys.stdin); print(json.dumps([o for o in orders if o.get('symbol')=='${{ github.event.inputs.orders_symbol }}'], indent=2))"
           elif [ -n "${{ github.event.inputs.review_days }}" ]; then
             python3 daytrader/scripts/review.py show "${{ github.event.inputs.review_days }}"
+          elif [ "${{ github.event.inputs.positions }}" = "true" ]; then
+            python3 -c "import sys; sys.path.insert(0, 'daytrader/scripts'); import json, research; from trade import WATCHLIST_SYMBOLS; print(json.dumps([p for p in research.get_positions() if p.get('symbol') in WATCHLIST_SYMBOLS], indent=2))"
           elif [ -n "${{ github.event.inputs.detail_symbol }}" ]; then
             python3 daytrader/scripts/backtest.py detail "${{ github.event.inputs.detail_symbol }}" "${{ github.event.inputs.lookback_days || 30 }}"
           elif [ "${{ github.event.inputs.atr_check }}" = "true" ]; then

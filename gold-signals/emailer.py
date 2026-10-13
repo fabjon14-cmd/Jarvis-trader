@@ -244,12 +244,12 @@ def watch_email(w):
     d = w["dir"]
     kind = "H4 support" if d > 0 else "H4 resistance"
     srcs = ", ".join(n for n in w["names"] if n != "round number") or "round number"
-    subj = f"GOLD WATCH · {side(d)} zone {p1(w['zl'])}-{p1(w['zh'])} ({kind}) · watching 5m"
+    subj = f"GOLD WATCH · {side(d)} zone {p1(w['zl'])}-{p1(w['zh'])} ({kind}) · watching {'1m + 5m' if C.HELPER_1M else '5m'}"
     L = [f"HEADS-UP: price is in {kind} {p1(w['zl'])}–{p1(w['zh'])} with the H4 trend {'UP' if d > 0 else 'DOWN'} — {_uk(w['start'])} (UK)",
-         "", "No trade yet. Until " + _uk(w["expires"]) + " the bot checks every 5m candle for:",
-         f"  • a 5m {'rejection wick (40%+ of the candle) or bullish reversal close' if d > 0 else 'rejection wick (40%+ of the candle) or bearish reversal close'} inside the zone",
+         "", "No trade yet. Until " + _uk(w["expires"]) + f" the bot checks every {'1m and 5m' if C.HELPER_1M else '5m'} candle for:",
+         f"  • a {'1m / 5m' if C.HELPER_1M else '5m'} {'rejection wick (40%+ of the candle) or bullish reversal close' if d > 0 else 'rejection wick (40%+ of the candle) or bearish reversal close'} inside the zone",
          f"  • without a close {'below' if d > 0 else 'above'} {p1(w['zl'] if d > 0 else w['zh'])}",
-         "If it appears you get a '5m ENTRY' email with entry, stop and targets.",
+         "If it appears you get a '1m ENTRY' or '5m ENTRY' email with entry, stop and targets.",
          "", f"ZONE: strength {w['strength']:.0f} ({zone_label(w['strength'])}) · built from: {srcs}", "",
          "TREND CHECK                     Direction   Agrees?"]
     L += _trend_rows(w["context"], d)
@@ -261,16 +261,18 @@ def watch_email(w):
 def entry5_email(t, w):
     d = t["dir"]
     S = side(d)
+    tf = t.get("tf", "5m")
+    mins = 1 if tf == "1m" else 5
     kind = "H4 support" if d > 0 else "H4 resistance"
-    subj = (f"GOLD {S} · 5m ENTRY · {p(t['entry'])} · SL {p1(t['sl0'])} · TP1 {t['tp1']:.0f} / TP2 {t['tp2']:.0f}")
+    subj = (f"GOLD {S} · {tf} ENTRY · {p(t['entry'])} · SL {p1(t['sl0'])} · TP1 {t['tp1']:.0f} / TP2 {t['tp2']:.0f}")
     lock_at = min(C.LOCK_AT, C.LOCK_TRIG - 5.0)
     trig = t["entry"] + (t["tp1"] - t["entry"]) * C.LOCK_TRIG / 100.0
     lock_px = t["entry"] + (t["tp1"] - t["entry"]) * lock_at / 100.0
-    L = [f"5m ENTRY: {S} {C.SYMBOL_LABEL} — {_uk(pd.Timestamp(t['time']) + pd.Timedelta(minutes=5))} (UK)",
+    L = [f"{tf} ENTRY: {S} {C.SYMBOL_LABEL} — {tf} candle closed {_uk(pd.Timestamp(t['time']) + pd.Timedelta(minutes=mins))} (UK)",
          "", "ENTRY",
          f"  Entry zone:   {p1(t['zl'])} – {p1(t['zh'])}  ({kind})",
-         f"  Entry price:  {p(t['entry'])} (5m candle close)",
-         f"  Stop loss:    {p(t['sl0'])}  ({'below' if d > 0 else 'above'} the 5m wick + buffer) · risk {p1(t['risk'])}",
+         f"  Entry price:  {p(t['entry'])} ({tf} candle close)" + (f" · price now {p(t['price_now'])}" if t.get("price_now") else ""),
+         f"  Stop loss:    {p(t['sl0'])}  ({'below' if d > 0 else 'above'} the {tf} wick + buffer) · risk {p1(t['risk'])}",
          f"  TP1:          {p(t['tp1'])}  ({t['rr1']:.1f}R) → close {C.PARTIAL_PCT:g}%, then lock/BE",
          f"  TP2:          {p(t['tp2'])}  ({t['rr2']:.1f}R)",
          f"  Size:         {lots(t['risk'])}", "",
@@ -278,12 +280,12 @@ def entry5_email(t, w):
     L += _trend_rows(w["context"], d)
     L += ["", "WHY THIS ENTRY",
           f"  ✔ Price inside {kind} {p1(t['zl'])}–{p1(t['zh'])} (strength {w['strength']:.0f}, {zone_label(w['strength'])}) in the H4 trend direction",
-          f"  ✔ 5m {t['how']} — wick {t['wick'] * 100:.0f}% of the candle, closed back {'above' if d > 0 else 'below'} the zone edge",
+          f"  ✔ {tf} {t['how']} — wick {t['wick'] * 100:.0f}% of the candle, closed back {'above' if d > 0 else 'below'} the zone edge",
           "  • Tighter stop than the 30m signal = smaller risk per trade, but it gets hit more often",
           "", "WHAT WOULD CANCEL IT",
           f"  • A close {'below' if d > 0 else 'above'} {p(t['sl0'])} (SL), or a 30m close {'below' if d > 0 else 'above'} {p1(t['zl'] if d > 0 else t['zh'])} = zone broken",
           "", "PLAN",
-          f"  1. Enter near {p(t['entry'])}"]
+          f"  1. Enter near {p(t['entry'])}" + (" — alerts run every ~5 min, so check the live price first; if it has moved well past the entry, skip it rather than chase" if tf == "1m" else "")]
     if C.LOCK_ON:
         L.append(f"  2. At {C.LOCK_TRIG:g}% of the way to TP1 (≈{p1(trig)}) the stop moves to {p1(lock_px)}")
     L += [f"  3. At TP1: close {C.PARTIAL_PCT:g}%, stop to break-even or better",
@@ -295,15 +297,17 @@ def entry5_email(t, w):
 
 def follow5_email(t, kind, info, bar_time):
     S = side(t["dir"])
-    when = _uk(pd.Timestamp(bar_time) + pd.Timedelta(minutes=5))
-    head = f"5m {S} from {p(t['entry'])} (entered {_uk(pd.Timestamp(t['time']) + pd.Timedelta(minutes=5))})"
+    tf = t.get("tf", "5m")
+    mins = 1 if tf == "1m" else 5
+    when = _uk(pd.Timestamp(bar_time) + pd.Timedelta(minutes=mins))
+    head = f"{tf} {S} from {p(t['entry'])} (entered {_uk(pd.Timestamp(t['time']) + pd.Timedelta(minutes=mins))})"
     if kind == "LOCK":
-        return (f"GOLD 5m {S} · LOCK · move SL to {p1(info['new_sl'])}",
+        return (f"GOLD {tf} {S} · LOCK · move SL to {p1(info['new_sl'])}",
                 f"{head}\n\nMove your stop loss to {p(info['new_sl'])} (+{info['locked_r']:.2f}R locked).\nTP1 {p(t['tp1'])} · TP2 {p(t['tp2'])}\nTime: {when} (UK)")
     if kind == "TP1":
-        return (f"GOLD 5m {S} · TP1 HIT · close {C.PARTIAL_PCT:g}%, SL to {p1(info['new_sl'])}",
+        return (f"GOLD {tf} {S} · TP1 HIT · close {C.PARTIAL_PCT:g}%, SL to {p1(info['new_sl'])}",
                 f"{head}\n\nTP1 {p(t['tp1'])} reached. Close {C.PARTIAL_PCT:g}% and move the stop to {p(info['new_sl'])}.\nRemaining target: TP2 {p(t['tp2'])}.\nTime: {when} (UK)")
     names = {"TARGET": "TP2 hit", "STOPPED": "stopped out", "BE EXIT": "rest closed at break-even / locked stop",
              "LOCKED EXIT": "closed at the locked stop"}
-    return (f"GOLD 5m {S} · CLOSED · {names.get(info['result'], info['result'])} · {info['r']:+.2f}R",
+    return (f"GOLD {tf} {S} · CLOSED · {names.get(info['result'], info['result'])} · {info['r']:+.2f}R",
             f"{head}\n\nResult: {names.get(info['result'], info['result'])} at {p(info['price'])}\nTrade result: {info['r']:+.2f}R\nTime: {when} (UK)")

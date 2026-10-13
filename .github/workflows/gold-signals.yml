@@ -31,6 +31,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # latest main at job start, not the commit the run was triggered from -
+          # back-to-back runs must see the state.json the previous run saved
+          ref: ${{ github.ref_name }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -58,6 +62,7 @@ jobs:
         run: |
           git config user.name "gold-signals-bot"
           git config user.email "actions@users.noreply.github.com"
+          if [ ! -f gold-signals/state.json ]; then echo "No state file yet."; exit 0; fi
           git add gold-signals/state.json
           if git diff --staged --quiet; then
             echo "No state change."

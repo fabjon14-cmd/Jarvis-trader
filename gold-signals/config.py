@@ -70,6 +70,9 @@ ASIA = ("00:00", "07:00", "Europe/London")
 LONDON = ("08:00", "16:30", "Europe/London")
 NEWYORK = ("08:00", "17:00", "America/New_York")
 
+# ---- alerts ----
+STALE_MIN = 45             # a 30m event older than this (after its candle closed) is summarised, not alerted
+
 # ---- 5m entry helper ----
 # When a 30m candle trades into an H4 zone in the H4 trend direction (and no
 # trade is open) the bot emails a WATCH note, then checks 5m candles for a
@@ -77,4 +80,7 @@ NEWYORK = ("08:00", "17:00", "America/New_York")
 HELPER_5M = True
 WATCH_HOURS = 2.0          # stop watching 5m after this long
 SL5_BUF_ATR = 0.10         # 5m stop: beyond the trigger candle's wick by this x 1h ATR
-MIN_RISK5_ATR = 0.20       # 5m stop never tighter than this x 1h ATR
+MIN_RISK5_ATR = 0.20       # 5m / 1m stop never tighter than this x 1h ATR
+HELPER_1M = True           # also check 1m candles while watching (first trigger, 1m or 5m, wins)
+# Runs are every ~5 minutes, so a 1m / 5m trigger can be a few minutes old when the email
+# goes out. If price has already reached the stop or TP1 by then, no entry email is sent.

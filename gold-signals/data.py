@@ -90,14 +90,19 @@ def get_data(now=None):
 
 
 def get_5m(n=120, now=None):
-    """Recent closed 5m candles (for the 5m entry helper)."""
+    """Recent closed 5m candles (for the entry helper)."""
+    return get_tf("5m", n, now)
+
+
+def get_tf(tf, n=120, now=None):
+    """Recent closed 1m or 5m candles (for the entry helper)."""
+    mins = {"1m": 1, "5m": 5}[tf]
     key = os.getenv("TWELVEDATA_API_KEY")
     if key:
-        df = _twelve("XAU/USD", key, outputsize=n, interval="5min")
+        df = _twelve("XAU/USD", key, outputsize=n, interval=f"{mins}min")
     else:
-        df = _alpaca_paxg_tf("5Min", days=2)
-    df = drop_forming(df, now, minutes=5)
-    return df
+        df = _alpaca_paxg_tf(f"{mins}Min", days=1 if mins == 1 else 2)
+    return drop_forming(df, now, minutes=mins)
 
 
 def _alpaca_paxg_tf(tf, days):

@@ -64,7 +64,7 @@ def _targets(w, entry, d, risk):
     return Engine.targets(None, Z, entry, d, risk, w["atr"])
 
 
-def trigger(b5: pd.DataFrame, k: int, w: dict):
+def trigger(b5: pd.DataFrame, k: int, w: dict, tf: str = "5m"):
     """Check closed 5m candle k against watch w. Returns a trade dict or None."""
     if k < 1:
         return None
@@ -97,7 +97,7 @@ def trigger(b5: pd.DataFrame, k: int, w: dict):
     t = b5.index[k]
     wick = (lw if d > 0 else uw) / rng
     return {
-        "id": f"5{'B' if d > 0 else 'S'}{t.strftime('%Y%m%d%H%M')}",
+        "id": f"{tf}{'B' if d > 0 else 'S'}{t.strftime('%Y%m%d%H%M')}", "tf": tf,
         "dir": d, "entry": c, "sl0": sl, "sl": sl, "tp1": tp1, "tp2": tp2, "rr1": rr1, "rr2": rr2,
         "risk": risk, "time": t.isoformat(), "zl": zl, "zh": zh, "half": False, "lock": False,
         "how": "rejection wick" if wick >= 0.4 else "reversal close", "wick": wick,
@@ -141,6 +141,17 @@ def step(t: dict, bar) -> list:
         elif hitT2:
             close(pf * t["rr1"] + (1 - pf) * t["rr2"], "TARGET", t["tp2"])
     return out
+
+
+def already_moved(t: dict, bars: pd.DataFrame, after) -> str:
+    """'' if price has not yet reached the stop or TP1 since the trigger candle, else what it hit."""
+    later = bars[bars.index > after]
+    for _, b in later.iterrows():
+        if (b["low"] <= t["sl0"]) if t["dir"] > 0 else (b["high"] >= t["sl0"]):
+            return "stop"
+        if (b["high"] >= t["tp1"]) if t["dir"] > 0 else (b["low"] <= t["tp1"]):
+            return "TP1"
+    return ""
 
 
 def broken(w: dict, close30: float) -> bool:

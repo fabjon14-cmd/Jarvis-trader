@@ -10,9 +10,10 @@ Email alerts from a Python port of the **GoldSignalsPro** TradingView indicator.
   - **LOCK**: move the stop into profit. **TP1 HIT**: close half and move the stop. **CLOSED**: the result in R plus a 7-day tally.
   - **Daily status** once each weekday after 07:00 UK: trend, nearest zones, open trade, last 24h.
 - **5m entry helper**: when a 30m candle trades into an H4 zone in the H4 trend direction (and no trade is open), you get a **WATCH** email.
-  For the next 2 hours the bot checks every 5m candle. A rejection wick or reversal close inside the zone triggers a **5m ENTRY** email,
-  with a tighter stop just past that candle's wick. That trade then gets its own LOCK / TP1 / CLOSED emails. The same zone isn't re-watched within 4 hours.
-  5m data is only fetched while watching or while a 5m trade is open. Turn it off with `HELPER_5M = False` in `config.py`.
+  For the next 2 hours the bot checks every **1m and 5m** candle. The first rejection wick or reversal close inside the zone triggers a **1m ENTRY** or **5m ENTRY** email,
+  with a tighter stop just past that candle's wick. Runs are ~5 minutes apart, so if price has already reached the stop or TP1 by the time the run sees the trigger, no entry email is sent. That trade then gets its own LOCK / TP1 / CLOSED emails. The same zone isn't re-watched within 4 hours.
+  1m/5m data is only fetched while watching or while a helper trade is open. Turn off 1m with `HELPER_1M = False`, or the whole helper with `HELPER_5M = False`, in `config.py`.
+  The backtest covers the 5m helper only. Free 1m history is just a few days, too short to test.
 - Rules: 30m confirmed candle close at a zone, **H4 zone + 30m trigger** (the zone must contain an H4 swing or yesterday's/last week's high-low, and the 30m structure must agree), falling-knife filter, profit lock 50%/15%, partial TP 50% at 1R, no A-grade sells, liquidity-sweep bonus.
 
 ## Setup (one time)

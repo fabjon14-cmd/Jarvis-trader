@@ -37,7 +37,7 @@ UK = ZoneInfo("Europe/London")
 def load_state():
     st = json.loads(STATE.read_text()) if STATE.exists() else {}
     for k, v in {"last_bar": None, "sent": [], "last_daily": None, "last_fetch": None,
-                 "watch": None, "t5": None, "last5": None}.items():
+                 "watch": None, "t5": None, "last_5m": None, "last_1m": None}.items():
         st.setdefault(k, v)
     return st
 
@@ -92,8 +92,14 @@ def process_30m(now, st, daily_due, uk_now):
     if new_bar:
         cutoff = prev if prev is not None else last_bar - pd.Timedelta(minutes=1)
         sent = set(st["sent"])
+        stale = []
+        fresh_after = pd.Timestamp(now) - pd.Timedelta(minutes=C.STALE_MIN) - pd.Timedelta(minutes=30)
         for ev in events:
             if ev.time <= cutoff or ev.key in sent:
+                continue
+            if ev.time < fresh_after:          # bot was not running when this happened: summarise, don't alert
+                stale.append(ev)
+                st["sent"].append(ev.key)
                 continue
             if ev.kind == "SIGNAL":
                 subj, body = emailer.signal_email(ev, source)
@@ -102,6 +108,17 @@ def process_30m(now, st, daily_due, uk_now):
             emailer.send(subj, body)
             print("sent:", subj)
             st["sent"].append(ev.key)
+
+        if stale:
+            lines = [f"The bot last checked the market at {emailer.uk_time(prev) if prev is not None else '?'} (UK) — runs did not start after that.",
+                     "These happened in the meantime. They are NOT live alerts — don't act on them now:", ""]
+            for e in stale:
+                lines.append(f"  {emailer.uk_time(e.time)}  {e.kind:<7} {emailer.side(e.trade.dir)} {e.trade.entry:.2f}"
+                             + (f"  {e.info['result']} {e.info['r']:+.2f}R" if e.kind == "CLOSED" else ""))
+            T = eng.trade
+            lines += ["", f"Open trade now: {emailer.side(T.dir)} from {T.entry:.2f} · SL {T.sl:.2f} · TP1 {T.tp1:.2f} · TP2 {T.tp2:.2f}" if T else "Open trade now: none"]
+            emailer.send(f"GOLD · CATCH-UP · {len(stale)} event(s) while the bot was offline", "\n".join(lines))
+            print("sent catch-up for", len(stale), "events")
 
         # 5m helper: end a broken / expired watch, maybe start a new one
         if C.HELPER_5M:
@@ -124,7 +141,7 @@ def process_30m(now, st, daily_due, uk_now):
                     emailer.send(subj, body)
                     print("sent:", subj)
                     st["watch"] = cand
-                    st["last5"] = (pd.Timestamp(cand["start"]) - pd.Timedelta(minutes=5)).isoformat()
+                    st["last_5m"] = st["last_1m"] = None
         st["last_bar"] = last_bar.isoformat()
     else:
         print(f"30m: feed has no new candle yet (latest {last_bar}).")
@@ -139,36 +156,83 @@ def process_30m(now, st, daily_due, uk_now):
 
 
 # ---------------------------------------------------------------- 5m
-def process_5m(now, st):
-    b5 = data.get_5m(now=now)
-    if len(b5) < 3:
-        return
-    last5 = pd.Timestamp(st["last5"]) if st.get("last5") else b5.index[-2]
-    new = [k for k in range(1, len(b5)) if b5.index[k] > last5]     # last5 = open time of the last processed 5m candle
-    for k in new:
-        t = b5.index[k]
-        if st.get("t5"):
-            for kind, info in H.step(st["t5"], b5.iloc[k]):
-                subj, body = emailer.follow5_email(st["t5"], kind, info, t)
-                emailer.send(subj, body)
-                print("sent:", subj)
-            if st["t5"].get("closed"):
-                st["t5"] = None
-        elif st.get("watch"):
-            w = st["watch"]
-            if t >= pd.Timestamp(w["expires"]):
-                print("5m: watch expired.")
-                st["watch"] = None
+TF_MIN = {"1m": 1, "5m": 5}
+
+
+def process_helper(now, st):
+    """WATCH -> 1m / 5m ENTRY -> manage that trade on its own candles."""
+    w, tr = st.get("watch"), st.get("t5")
+    if tr:
+        tf = tr.get("tf", "5m")
+        bars = data.get_tf(tf, now=now)
+        if len(bars) < 3:
+            return
+        last = pd.Timestamp(st.get("last_" + tf) or bars.index[-2])
+        for k in range(1, len(bars)):
+            t = bars.index[k]
+            if t <= last:
                 continue
-            tr = H.trigger(b5, k, w)
-            if tr:
-                subj, body = emailer.entry5_email(tr, w)
+            for kind, info in H.step(tr, bars.iloc[k]):
+                subj, body = emailer.follow5_email(tr, kind, info, t)
                 emailer.send(subj, body)
                 print("sent:", subj)
-                st["t5"] = tr
-                st["watch"] = None
-        st["last5"] = t.isoformat()
-    print(f"5m: processed up to {b5.index[-1]}. Watching: {bool(st.get('watch'))}. 5m trade: {st['t5']['id'] if st.get('t5') else 'none'}")
+            st["last_" + tf] = t.isoformat()
+            if tr.get("closed"):
+                st["t5"] = None
+                break
+        print(f"helper: {tf} trade {tr['id']} {'closed' if tr.get('closed') else 'open'}")
+        return
+
+    if not w:
+        return
+    exp = pd.Timestamp(w["expires"])
+    tfs = ["1m", "5m"] if C.HELPER_1M else ["5m"]
+    bars = {tf: data.get_tf(tf, now=now) for tf in tfs}
+    found = []
+    for tf in tfs:
+        b = bars[tf]
+        if len(b) < 3:
+            continue
+        step = pd.Timedelta(minutes=TF_MIN[tf])
+        last = pd.Timestamp(st.get("last_" + tf) or (pd.Timestamp(w["start"]) - step))
+        for k in range(1, len(b)):
+            t = b.index[k]
+            if t <= last or t < pd.Timestamp(w["start"]):
+                continue
+            if t >= exp:
+                break
+            c = float(b["close"].iloc[k])
+            if (c < w["zl"]) if w["dir"] > 0 else (c > w["zh"]):
+                break                                   # closed through the zone: no entry from here
+            hit = H.trigger(b, k, w, tf)
+            if hit:
+                found.append((t + step, tf, hit))
+                break
+        st["last_" + tf] = b.index[-1].isoformat()
+
+    if found:
+        found.sort(key=lambda x: x[0])
+        closed_at, tf, hit = found[0]
+        fine = bars["1m"] if "1m" in bars and len(bars["1m"]) else bars[tf]
+        moved = H.already_moved(hit, fine, closed_at - pd.Timedelta(minutes=1))
+        st["watch"] = None
+        if moved:
+            print(f"helper: {tf} entry at {hit['entry']:.2f} skipped - price already reached the {moved} before this run")
+            return
+        hit["price_now"] = float(fine["close"].iloc[-1])
+        hit["now"] = fine.index[-1].isoformat()
+        subj, body = emailer.entry5_email(hit, w)
+        emailer.send(subj, body)
+        print("sent:", subj)
+        st["t5"] = hit
+        st["last_" + tf] = hit["time"]                  # manage from the candle after the trigger
+        return
+
+    if now >= exp.to_pydatetime():
+        print("helper: watch expired.")
+        st["watch"] = None
+    else:
+        print("helper: watching, no trigger yet.")
 
 
 # ---------------------------------------------------------------- main
@@ -209,7 +273,7 @@ def main():
         process_30m(now, st, daily_due, uk_now)
     if C.HELPER_5M and (st.get("watch") or st.get("t5")):
         try:
-            process_5m(now, st)
+            process_helper(now, st)
         except Exception as exc:          # a 5m hiccup must never stop the 30m bot
             print("5m helper error:", exc)
     save_state(st)

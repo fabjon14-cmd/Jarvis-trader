@@ -70,6 +70,9 @@ ASIA = ("00:00", "07:00", "Europe/London")
 LONDON = ("08:00", "16:30", "Europe/London")
 NEWYORK = ("08:00", "17:00", "America/New_York")
 
+# ---- alerts ----
+STALE_MIN = 45             # a 30m event older than this (after its candle closed) is summarised, not alerted
+
 # ---- 5m entry helper ----
 # When a 30m candle trades into an H4 zone in the H4 trend direction (and no
 # trade is open) the bot emails a WATCH note, then checks 5m candles for a

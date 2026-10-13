@@ -92,8 +92,14 @@ def process_30m(now, st, daily_due, uk_now):
     if new_bar:
         cutoff = prev if prev is not None else last_bar - pd.Timedelta(minutes=1)
         sent = set(st["sent"])
+        stale = []
+        fresh_after = pd.Timestamp(now) - pd.Timedelta(minutes=C.STALE_MIN) - pd.Timedelta(minutes=30)
         for ev in events:
             if ev.time <= cutoff or ev.key in sent:
+                continue
+            if ev.time < fresh_after:          # bot was not running when this happened: summarise, don't alert
+                stale.append(ev)
+                st["sent"].append(ev.key)
                 continue
             if ev.kind == "SIGNAL":
                 subj, body = emailer.signal_email(ev, source)
@@ -102,6 +108,17 @@ def process_30m(now, st, daily_due, uk_now):
             emailer.send(subj, body)
             print("sent:", subj)
             st["sent"].append(ev.key)
+
+        if stale:
+            lines = [f"The bot last checked the market at {emailer.uk_time(prev) if prev is not None else '?'} (UK) — runs did not start after that.",
+                     "These happened in the meantime. They are NOT live alerts — don't act on them now:", ""]
+            for e in stale:
+                lines.append(f"  {emailer.uk_time(e.time)}  {e.kind:<7} {emailer.side(e.trade.dir)} {e.trade.entry:.2f}"
+                             + (f"  {e.info['result']} {e.info['r']:+.2f}R" if e.kind == "CLOSED" else ""))
+            T = eng.trade
+            lines += ["", f"Open trade now: {emailer.side(T.dir)} from {T.entry:.2f} · SL {T.sl:.2f} · TP1 {T.tp1:.2f} · TP2 {T.tp2:.2f}" if T else "Open trade now: none"]
+            emailer.send(f"GOLD · CATCH-UP · {len(stale)} event(s) while the bot was offline", "\n".join(lines))
+            print("sent catch-up for", len(stale), "events")
 
         # 5m helper: end a broken / expired watch, maybe start a new one
         if C.HELPER_5M:

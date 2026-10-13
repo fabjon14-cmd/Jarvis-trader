@@ -1,0 +1,31 @@
+name: Gold Signals Backtest
+
+# Manual only. Backtests the gold bot on the most recent ~3,000 30m candles
+# from the live feed and emails the results (email-bot rules vs the
+# TradingView rules without the H4-zone / 30m-agree filter).
+on:
+  workflow_dispatch: {}
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests pandas numpy python-dotenv
+
+      - name: Backtest and email results
+        env:
+          TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
+          CRYPTO_APCA_API_KEY_ID: ${{ secrets.CRYPTO_APCA_API_KEY_ID }}
+          CRYPTO_APCA_API_SECRET_KEY: ${{ secrets.CRYPTO_APCA_API_SECRET_KEY }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          REPORT_TO_EMAIL: ${{ secrets.REPORT_TO_EMAIL }}
+        run: python3 gold-signals/backtest.py --compare --list --email

@@ -1,0 +1,72 @@
+name: Gold Signals
+
+# Gold (XAUUSD) signal bot - Python port of the GoldSignalsPro TradingView
+# indicator, "H4 zone + 30m trigger" rules. Signals only: it emails setups,
+# it never places orders. See gold-signals/README.md.
+#
+# Every 5 minutes (GitHub's floor; runs can start a few minutes late under
+# load). Most runs exit in seconds without fetching anything - the bot only
+# fetches data once a new 30m candle has closed, which keeps the free
+# Twelve Data plan well inside its daily limit.
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+    inputs:
+      test:
+        description: "Send test emails (latest signal in history + daily status)"
+        required: false
+        default: "false"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: gold-signals
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests pandas numpy python-dotenv
+
+      - name: Run gold signal bot
+        env:
+          TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
+          CRYPTO_APCA_API_KEY_ID: ${{ secrets.CRYPTO_APCA_API_KEY_ID }}
+          CRYPTO_APCA_API_SECRET_KEY: ${{ secrets.CRYPTO_APCA_API_SECRET_KEY }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          REPORT_TO_EMAIL: ${{ secrets.REPORT_TO_EMAIL }}
+        run: |
+          if [ "${{ github.event.inputs.test }}" = "true" ]; then
+            python3 gold-signals/run.py --test
+          else
+            python3 gold-signals/run.py
+          fi
+
+      - name: Save state
+        run: |
+          git config user.name "gold-signals-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add gold-signals/state.json
+          if git diff --staged --quiet; then
+            echo "No state change."
+            exit 0
+          fi
+          git commit -m "Gold signals state $(date -u +'%Y-%m-%d %H:%M UTC')"
+          for i in 1 2 3; do
+            git pull --rebase --autostash && git push && exit 0
+            sleep 5
+          done
+          echo "Could not push state after 3 tries."
+          exit 1

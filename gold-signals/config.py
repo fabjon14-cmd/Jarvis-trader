@@ -69,3 +69,12 @@ LOT_STEP = 0.01
 ASIA = ("00:00", "07:00", "Europe/London")
 LONDON = ("08:00", "16:30", "Europe/London")
 NEWYORK = ("08:00", "17:00", "America/New_York")
+
+# ---- 5m entry helper ----
+# When a 30m candle trades into an H4 zone in the H4 trend direction (and no
+# trade is open) the bot emails a WATCH note, then checks 5m candles for a
+# rejection / reversal inside the zone and emails a tighter "5m ENTRY".
+HELPER_5M = True
+WATCH_HOURS = 2.0          # stop watching 5m after this long
+SL5_BUF_ATR = 0.10         # 5m stop: beyond the trigger candle's wick by this x 1h ATR
+MIN_RISK5_ATR = 0.20       # 5m stop never tighter than this x 1h ATR

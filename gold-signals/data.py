@@ -87,3 +87,28 @@ def get_data(now=None):
     if "volume" in gold and gold["volume"].fillna(0).sum() == 0:
         gold = gold.drop(columns=["volume"])
     return gold, eur, xag, src
+
+
+def get_5m(n=120, now=None):
+    """Recent closed 5m candles (for the 5m entry helper)."""
+    key = os.getenv("TWELVEDATA_API_KEY")
+    if key:
+        df = _twelve("XAU/USD", key, outputsize=n, interval="5min")
+    else:
+        df = _alpaca_paxg_tf("5Min", days=2)
+    df = drop_forming(df, now, minutes=5)
+    return df
+
+
+def _alpaca_paxg_tf(tf, days):
+    key = os.getenv("CRYPTO_APCA_API_KEY_ID") or os.getenv("APCA_API_KEY_ID")
+    sec = os.getenv("CRYPTO_APCA_API_SECRET_KEY") or os.getenv("APCA_API_SECRET_KEY")
+    headers = {"APCA-API-KEY-ID": key or "", "APCA-API-SECRET-KEY": sec or ""}
+    start = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    params = {"symbols": "PAXG/USD", "timeframe": tf, "start": start, "limit": 10000, "sort": "asc"}
+    r = requests.get("https://data.alpaca.markets/v1beta3/crypto/us/bars", params=params, headers=headers, timeout=TIMEOUT)
+    r.raise_for_status()
+    df = pd.DataFrame(r.json().get("bars", {}).get("PAXG/USD", []))
+    df.index = pd.to_datetime(df.pop("t"), utc=True)
+    df = df.rename(columns={"o": "open", "h": "high", "l": "low", "c": "close", "v": "volume"})
+    return df[["open", "high", "low", "close", "volume"]].sort_index()

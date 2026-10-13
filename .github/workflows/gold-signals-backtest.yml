@@ -28,4 +28,4 @@ jobs:
           CRYPTO_APCA_API_SECRET_KEY: ${{ secrets.CRYPTO_APCA_API_SECRET_KEY }}
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           REPORT_TO_EMAIL: ${{ secrets.REPORT_TO_EMAIL }}
-        run: python3 gold-signals/backtest.py --compare --list --email
+        run: python3 gold-signals/backtest.py --compare --helper5m --list --email

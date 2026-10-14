@@ -215,6 +215,9 @@ def on_30m(S: dict, eng: Engine, i: int) -> list:
               or ran_away(w, float(eng.c[i]))):
         S["watch"] = None
         out.append(("WATCH_END", w))
+    pw = S.get("prev_watch")
+    if pw and (broken(pw, float(eng.c[i])) or pd.Timestamp(pw["expires"]) <= t_close or ran_away(pw, float(eng.c[i]))):
+        S.pop("prev_watch", None)
     S["arm"] = arm(eng, i) if C.LIVE_WATCH else None
     if S.get("watch") is None and S.get("t5") is None:
         cand = candidate(eng, i)
@@ -241,6 +244,11 @@ def on_bar(S: dict, t, bar, pc: float, bar5=None, pc5=None) -> list:
         out += [(k, (tr, info)) for k, info in ev]
         if tr.get("closed"):
             S["t5"] = None
+            pw = S.pop("prev_watch", None)
+            win = any(k == "CLOSED" and info["r"] > 0 for k, info in ev)
+            if pw and C.REWATCH != "off" and (C.REWATCH == "any" or win) and t < pd.Timestamp(pw["expires"]):
+                S["watch"] = pw                       # same zone, same window: a second retest can trigger again
+                out.append(("REWATCH", pw))
         return out
 
     A = S.get("arm")
@@ -285,6 +293,7 @@ def on_bar(S: dict, t, bar, pc: float, bar5=None, pc5=None) -> list:
         hit = trigger_bar(*(float(bar5[x]) for x in ("open", "high", "low", "close")), pc5, bar5.name, w, "5m")
     if hit:
         S["watch"] = None
+        S["prev_watch"] = w
         S["t5"] = hit
         out.append(("ENTRY", (hit, w)))
     return out

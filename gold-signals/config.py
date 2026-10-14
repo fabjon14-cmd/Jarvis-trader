@@ -85,6 +85,7 @@ LIVE_WATCH = False         # between 30m closes, start a WATCH as soon as a 1m c
 ARM_RANGE_ATR = 4.0        # ...only zones within this x ATR of the last 30m close
 ARM_MINUTES = 60           # ...armed zones stay valid this long if the next 30m close is late
 WATCH_DROP_ATR = 1.5       # end a watch once price runs this x ATR past the zone (the entry is gone)
+REWATCH = "off"            # after a 1m/5m trade closes, keep watching the zone until its window ends ("any" / "win" / "off")
 WICK_ONLY_1M = False       # 1m trigger needs a 40%+ rejection wick (reversal close alone not enough)
 HELPER_1M = True           # also check 1m candles while watching (first trigger, 1m or 5m, wins)
 # Runs are every ~5 minutes, so a 1m / 5m trigger can be a few minutes old when the email

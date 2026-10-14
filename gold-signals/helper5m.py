@@ -48,6 +48,8 @@ def candidate(eng: Engine, i: int):
     if best is None:
         return None
     _, z, zl, zh = best
+    if ran_away({"dir": d, "zl": zl, "zh": zh, "atr": float(a)}, float(eng.c[i])):
+        return None                                      # the candle already ran far past the zone
     opp = [{"lo": q.lo, "hi": q.hi, "s": q.s} for q in Z]
     start = eng.t[i] + pd.Timedelta(minutes=30)          # 30m candle close
     return {
@@ -86,6 +88,8 @@ def trigger_bar(o, h, l, c, pc, t, w: dict, tf: str):
     else:
         ok = h >= zl and h <= zh + sMax and c < zh and (uw >= 0.4 * rng or (c < o and c < pc))
         sl = h + C.SL5_BUF_ATR * a
+    if ok and tf == "1m" and C.WICK_ONLY_1M and (lw if d > 0 else uw) < 0.4 * rng:
+        ok = False                                   # 1m: only a real rejection wick, not just a lower/higher close
     if not ok:
         return None
     risk = (c - sl) * d

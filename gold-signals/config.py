@@ -81,10 +81,11 @@ HELPER_5M = True
 WATCH_HOURS = 2.0          # stop watching 5m after this long
 SL5_BUF_ATR = 0.10         # 5m stop: beyond the trigger candle's wick by this x 1h ATR
 MIN_RISK5_ATR = 0.35       # 5m / 1m stop never tighter than this x 1h ATR (0.20 was inside 1m noise)
-LIVE_WATCH = True          # between 30m closes, start a WATCH as soon as a 1m candle reaches an H4 zone
+LIVE_WATCH = False         # between 30m closes, start a WATCH as soon as a 1m candle reaches an H4 zone
 ARM_RANGE_ATR = 4.0        # ...only zones within this x ATR of the last 30m close
 ARM_MINUTES = 60           # ...armed zones stay valid this long if the next 30m close is late
 WATCH_DROP_ATR = 1.5       # end a watch once price runs this x ATR past the zone (the entry is gone)
+WICK_ONLY_1M = False       # 1m trigger needs a 40%+ rejection wick (reversal close alone not enough)
 HELPER_1M = True           # also check 1m candles while watching (first trigger, 1m or 5m, wins)
 # Runs are every ~5 minutes, so a 1m / 5m trigger can be a few minutes old when the email
 # goes out. If price has already reached the stop or TP1 by then, no entry email is sent.

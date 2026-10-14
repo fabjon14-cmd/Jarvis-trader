@@ -1,0 +1,33 @@
+name: Gold Data Snapshot
+
+# Manual. Saves recent XAU/USD 1m/5m/30m candles to the gold-data branch,
+# so the 1m/5m entry helper can be backtested on real data.
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install requests pandas numpy python-dotenv
+      - name: Fetch candles
+        env:
+          TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
+        run: python3 gold-signals/dump_data.py /tmp/gold-data
+      - name: Push to gold-data branch
+        run: |
+          git config user.name "gold-signals-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git checkout --orphan gold-data
+          git rm -rq --cached .
+          cp /tmp/gold-data/*.csv .
+          git add *.csv
+          git commit -qm "Gold data snapshot $(date -u +'%Y-%m-%d %H:%M UTC')"
+          git push -f origin gold-data

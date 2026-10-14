@@ -75,6 +75,7 @@ def process_30m(now, st, daily_due, uk_now):
         print("30m: fetched less than 4 minutes ago - waiting for the data feed.")
         return None
     gold, eur, xag, source = data.get_data(now)
+    GOLD30["df"] = gold
     st["last_fetch"] = now.isoformat()
     st["source"] = source
     if len(gold) < 500:
@@ -142,8 +143,8 @@ def helper_events(st, evs, b1, now):
             subj, body = emailer.watch_email(x)
             emailer.send(subj, body)
             print("sent:", subj)
-        elif kind == "WATCH_END":
-            print(f"helper: watch {x['zl']:.1f}-{x['zh']:.1f} ended")
+        elif kind in ("WATCH_END", "REWATCH"):
+            print(f"helper: watch {x['zl']:.1f}-{x['zh']:.1f} {'ended' if kind == 'WATCH_END' else 'resumed'}")
         elif kind == "ENTRY":
             hit, w = x
             mins = 1 if hit["tf"] == "1m" else 5
@@ -176,6 +177,53 @@ def run_1m(st, b1, after, until, now):
         st["last_1m"] = t.isoformat()
 
 
+# ---------------------------------------------------------------- 1m scalp signals
+GOLD30 = {}
+
+
+def process_scalp(now, st, b1):
+    """The full strategy on 1m candles (TradingView 1m chart, Scalp mode). Emails new 1m signals."""
+    g30 = GOLD30.get("df")
+    if g30 is None:
+        g30 = data.drop_forming(data._twelve("XAU/USD", data.os.environ["TWELVEDATA_API_KEY"], outputsize=1500), now) \
+            if data.os.getenv("TWELVEDATA_API_KEY") else data.get_data(now)[0]
+    eng = Engine(b1, None, None, htf_df=g30, profile=C.SCALP)
+    events = eng.run()
+    last = pd.Timestamp(st["scalp_last"]) if st.get("scalp_last") else b1.index[-1] - pd.Timedelta(minutes=1)
+    sent = set(st.setdefault("scalp_sent", []))
+    later = {}
+    for e in events:
+        if e.kind in ("TP1", "CLOSED"):
+            later.setdefault(e.trade.id, e)
+    emailer.BAR_MIN = 1
+    try:
+        for ev in events:
+            if ev.time <= last or ev.key in sent:
+                continue
+            st["scalp_sent"].append(ev.key)
+            if ev.kind != "SIGNAL" and not C.SCALP_FOLLOWUPS:
+                continue
+            age = (pd.Timestamp(now) - (ev.time + pd.Timedelta(minutes=1))).total_seconds() / 60
+            if ev.kind == "SIGNAL":
+                done = later.get(ev.trade.id)
+                if age > C.SCALP_STALE_MIN or done is not None:
+                    print(f"scalp: {ev.trade.id} not emailed - {f'{age:.0f} min old' if age > C.SCALP_STALE_MIN else 'already hit ' + done.kind}")
+                    continue
+                ev.info["price_now"] = float(b1["close"].iloc[-1])
+                subj, body = emailer.signal_email(ev, st.get("source", "Twelve Data XAU/USD") + " (1m)")
+            else:
+                if age > C.SCALP_STALE_MIN:
+                    continue
+                subj, body = emailer.follow_email(ev, tally(events, b1.index[-1] - pd.Timedelta(days=1)))
+            emailer.send(subj, body)
+            print("sent:", subj)
+    finally:
+        emailer.BAR_MIN = 30
+    st["scalp_last"] = b1.index[-1].isoformat()
+    st["scalp_sent"] = st["scalp_sent"][-300:]
+    print(f"scalp: processed 1m up to {b1.index[-1]} - open: {eng.trade.id if eng.trade else 'none'}")
+
+
 # ---------------------------------------------------------------- main
 def main():
     test = "--test" in sys.argv
@@ -205,7 +253,7 @@ def main():
 
     latest_closed_open = pd.Timestamp(now).floor("30min") - pd.Timedelta(minutes=30)
     need30 = not (st.get("last_bar") and pd.Timestamp(st["last_bar"]) >= latest_closed_open) or daily_due
-    need1 = C.HELPER_5M and bool(st.get("watch") or st.get("t5") or st.get("arm"))
+    need1 = C.SCALP_ON or (C.HELPER_5M and bool(st.get("watch") or st.get("t5") or st.get("arm")))
     if not need30 and not need1:
         print("No new 30m candle and nothing to watch on 1m/5m.")
         return
@@ -213,7 +261,7 @@ def main():
     b1 = None
     if need1:
         try:
-            b1 = data.get_tf("1m", n=300, now=now)
+            b1 = data.get_tf("1m", n=5000 if C.SCALP_ON else 300, now=now)
         except Exception as exc:          # a 1m hiccup must never stop the 30m bot
             print("1m fetch error:", exc)
     last = pd.Timestamp(st["last_1m"]) if st.get("last_1m") else None
@@ -249,6 +297,11 @@ def main():
                   f"armed {len(st['arm']['cands'])} H4 zone(s)" if st.get("arm") else "idle")
         except Exception as exc:
             print("helper error:", exc)
+    if C.SCALP_ON and b1 is not None and len(b1) > 500:
+        try:
+            process_scalp(now, st, b1)
+        except Exception as exc:          # never let the 1m signals stop the rest of the bot
+            print("scalp error:", exc)
     save_state(st)
 
 

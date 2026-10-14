@@ -81,13 +81,24 @@ HELPER_5M = True
 WATCH_HOURS = 2.0          # stop watching 5m after this long
 SL5_BUF_ATR = 0.10         # 5m stop: beyond the trigger candle's wick by this x 1h ATR
 MIN_RISK5_ATR = 0.35       # 5m / 1m stop never tighter than this x 1h ATR (0.20 was inside 1m noise)
-LIVE_WATCH = True          # between 30m closes, start a WATCH as soon as a 1m candle reaches an H4 zone
+LIVE_WATCH = False         # between 30m closes, start a WATCH as soon as a 1m candle reaches an H4 zone
 ARM_RANGE_ATR = 4.0        # ...only zones within this x ATR of the last 30m close
 ARM_MINUTES = 60           # ...armed zones stay valid this long if the next 30m close is late
 WATCH_DROP_ATR = 1.5       # end a watch once price runs this x ATR past the zone (the entry is gone)
-REWATCH = "any"            # after a 1m/5m trade closes, keep watching the zone until its window ends ("any" / "win" / "off")
-REWATCH_BLOCK_HOURS = 0    # don't start a new watch on a zone watched within this many hours (0 = no limit; was 4)
+REWATCH = "off"            # after a 1m/5m trade closes, keep watching the zone until its window ends ("any" / "win" / "off")
+REWATCH_BLOCK_HOURS = 4    # don't start a new watch on a zone watched within this many hours (0 = no limit; was 4)
 WICK_ONLY_1M = False       # 1m trigger needs a 40%+ rejection wick (reversal close alone not enough)
 HELPER_1M = True           # also check 1m candles while watching (first trigger, 1m or 5m, wins)
 # Runs are every ~5 minutes, so a 1m / 5m trigger can be a few minutes old when the email
 # goes out. If price has already reached the stop or TP1 by then, no entry email is sent.
+
+# ---- 1m SCALP signals: the TradingView indicator on a 1m chart ("Auto" -> Scalp mode) ----
+# Same strategy as the 30m signals, on 1m candles: ATR from 5m, trend from 15m (not required),
+# zones from H4 / H1 swings, day / week levels, round numbers. Your settings: knife filter,
+# lock 50%/15%, no A-grade sells. Emailed as "GOLD 1m BUY / SELL".
+SCALP_ON = True
+SCALP = dict(MIN_LEVEL_STR=2.0, SWEEP_MIN_ATR=0.10, SWEEP_MAX_ATR=0.80, SL_BUF_ATR=0.13, MIN_RISK_ATR=0.33,
+             MAX_RISK_ATR=1.60, MIN_RR=1.2, COOLDOWN_MIN=10, NEED_TREND=False, REQUIRE_HTF_ZONE=False,
+             REQUIRE_30M_AGREE=False, ATR_TF="5m", TREND_TF="15m", BASE_LABEL="1m", ID_PREFIX="M1")
+SCALP_STALE_MIN = 10       # don't email a 1m signal more than this many minutes after its candle closed
+SCALP_FOLLOWUPS = False    # also email LOCK / TP1 / CLOSED for 1m trades (~3x the emails; Resend free plan ~100/day)

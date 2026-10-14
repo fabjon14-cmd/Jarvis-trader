@@ -264,7 +264,8 @@ def entry5_email(t, w):
     tf = t.get("tf", "5m")
     mins = 1 if tf == "1m" else 5
     kind = "H4 support" if d > 0 else "H4 resistance"
-    subj = (f"GOLD {S} · {tf} ENTRY · {p(t['entry'])} · SL {p1(t['sl0'])} · TP1 {t['tp1']:.0f} / TP2 {t['tp2']:.0f}")
+    tag = f" · retest {w['retest']}" if w.get("retest") else " · between-30m zone" if w.get("via") == "1m" else ""
+    subj = (f"GOLD {S} · {tf} ENTRY{tag} · {p(t['entry'])} · SL {p1(t['sl0'])} · TP1 {t['tp1']:.0f} / TP2 {t['tp2']:.0f}")
     lock_at = min(C.LOCK_AT, C.LOCK_TRIG - 5.0)
     trig = t["entry"] + (t["tp1"] - t["entry"]) * C.LOCK_TRIG / 100.0
     lock_px = t["entry"] + (t["tp1"] - t["entry"]) * lock_at / 100.0

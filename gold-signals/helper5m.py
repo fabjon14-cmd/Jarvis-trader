@@ -202,7 +202,7 @@ def ran_away(w: dict, c: float) -> bool:
 
 
 def _recent_zone(S, mid, t):
-    S["watched"] = [x for x in S.get("watched", []) if t - pd.Timestamp(x[1]) < pd.Timedelta(hours=4)]
+    S["watched"] = [x for x in S.get("watched", []) if t - pd.Timestamp(x[1]) < pd.Timedelta(hours=C.REWATCH_BLOCK_HOURS)]
     return any(abs(m - mid) <= C.CLUSTER_DIST for m, _ in S["watched"])
 
 
@@ -247,6 +247,7 @@ def on_bar(S: dict, t, bar, pc: float, bar5=None, pc5=None) -> list:
             pw = S.pop("prev_watch", None)
             win = any(k == "CLOSED" and info["r"] > 0 for k, info in ev)
             if pw and C.REWATCH != "off" and (C.REWATCH == "any" or win) and t < pd.Timestamp(pw["expires"]):
+                pw["retest"] = pw.get("retest", 1) + 1
                 S["watch"] = pw                       # same zone, same window: a second retest can trigger again
                 out.append(("REWATCH", pw))
         return out

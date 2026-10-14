@@ -69,7 +69,11 @@ def trigger(b5: pd.DataFrame, k: int, w: dict, tf: str = "5m"):
     if k < 1:
         return None
     o, h, l, c = (float(b5[x].iloc[k]) for x in ("open", "high", "low", "close"))
-    pc = float(b5["close"].iloc[k - 1])
+    return trigger_bar(o, h, l, c, float(b5["close"].iloc[k - 1]), b5.index[k], w, tf)
+
+
+def trigger_bar(o, h, l, c, pc, t, w: dict, tf: str):
+    """Check one closed candle (o/h/l/c, previous close pc, open time t) against watch w."""
     rng = h - l
     if rng <= 0:
         return None
@@ -94,7 +98,6 @@ def trigger(b5: pd.DataFrame, k: int, w: dict, tf: str = "5m"):
     rr1, rr2 = abs(tp1 - c) / risk, abs(tp2 - c) / risk
     if rr2 < C.MIN_RR:
         return None
-    t = b5.index[k]
     wick = (lw if d > 0 else uw) / rng
     return {
         "id": f"{tf}{'B' if d > 0 else 'S'}{t.strftime('%Y%m%d%H%M')}", "tf": tf,
@@ -157,3 +160,152 @@ def already_moved(t: dict, bars: pd.DataFrame, after) -> str:
 def broken(w: dict, close30: float) -> bool:
     """A 30m close through the far side of the zone ends the watch."""
     return close30 < w["zl"] if w["dir"] > 0 else close30 > w["zh"]
+
+
+# ---------------------------------------------------------------- live zone arming + 1m state machine
+def arm(eng: Engine, i: int):
+    """At a 30m close: every H4 zone near price that could start a WATCH before the next 30m close."""
+    if eng.trade is not None:
+        return None
+    d = eng.trend_at(i)
+    a = eng.atr_at(i)
+    if d == 0 or np.isnan(a) or a <= 0:
+        return None
+    pad = C.CLUSTER_DIST * 0.15
+    Z = eng.zones(i)
+    c = float(eng.c[i])
+    cands = []
+    for z in Z:
+        if not z.htf or z.s < C.MIN_LEVEL_STR:
+            continue
+        zl, zh = z.lo - pad, z.hi + pad
+        if min(abs(c - zl), abs(c - zh)) > C.ARM_RANGE_ATR * a:
+            continue
+        side = 1 if c > zh else -1 if c < zl else eng.role_from(zl, zh, i, 1)
+        cands.append({"zl": zl, "zh": zh, "s": z.s, "names": z.names, "side": side})
+    if not cands:
+        return None
+    start = eng.t[i] + pd.Timedelta(minutes=30)
+    return {"dir": d, "atr": float(a), "cands": cands, "zones": [{"lo": q.lo, "hi": q.hi, "s": q.s} for q in Z],
+            "from": start.isoformat(), "until": (start + pd.Timedelta(minutes=C.ARM_MINUTES)).isoformat(),
+            "context": eng.context(i)}
+
+
+def ran_away(w: dict, c: float) -> bool:
+    """Price has left the zone in the trade direction by WATCH_DROP_ATR x ATR: the entry is gone."""
+    x = C.WATCH_DROP_ATR * w["atr"]
+    return c > w["zh"] + x if w["dir"] > 0 else c < w["zl"] - x
+
+
+def _recent_zone(S, mid, t):
+    S["watched"] = [x for x in S.get("watched", []) if t - pd.Timestamp(x[1]) < pd.Timedelta(hours=4)]
+    return any(abs(m - mid) <= C.CLUSTER_DIST for m, _ in S["watched"])
+
+
+def on_30m(S: dict, eng: Engine, i: int) -> list:
+    """Call once per closed 30m candle (after the engine has stepped it). Returns [(kind, payload)]."""
+    out = []
+    t_close = eng.t[i] + pd.Timedelta(minutes=30)
+    w = S.get("watch")
+    if w and (broken(w, float(eng.c[i])) or pd.Timestamp(w["expires"]) <= t_close or eng.trade is not None
+              or ran_away(w, float(eng.c[i]))):
+        S["watch"] = None
+        out.append(("WATCH_END", w))
+    S["arm"] = arm(eng, i) if C.LIVE_WATCH else None
+    if S.get("watch") is None and S.get("t5") is None:
+        cand = candidate(eng, i)
+        if cand and not _recent_zone(S, (cand["zl"] + cand["zh"]) / 2, eng.t[i]):
+            S.setdefault("watched", []).append([(cand["zl"] + cand["zh"]) / 2, eng.t[i].isoformat()])
+            S["watch"] = cand
+            out.append(("WATCH", cand))
+    return out
+
+
+def on_bar(S: dict, t, bar, pc: float, bar5=None, pc5=None) -> list:
+    """Advance the helper by one closed 1m candle (open time t). bar5/pc5: the 5m candle that closes
+    with this minute, if any. Returns [(kind, payload)] - WATCH, ENTRY, LOCK/TP1/CLOSED, WATCH_END."""
+    out = []
+    o, h, l, c = (float(bar[x]) for x in ("open", "high", "low", "close"))
+    tr = S.get("t5")
+    if tr:
+        if tr.get("tf", "5m") == "1m":
+            ev = step(tr, bar)
+        elif bar5 is not None:
+            ev = step(tr, bar5)
+        else:
+            ev = []
+        out += [(k, (tr, info)) for k, info in ev]
+        if tr.get("closed"):
+            S["t5"] = None
+        return out
+
+    A = S.get("arm")
+    w = S.get("watch")
+    if w is None and A and pd.Timestamp(A["from"]) <= t < pd.Timestamp(A["until"]):
+        d = A["dir"]
+        for z in A["cands"]:
+            zl, zh = z["zl"], z["zh"]
+            if z["side"] == d:
+                touched = (l <= zh and c >= zl) if d > 0 else (h >= zl and c <= zh)
+                if touched and not _recent_zone(S, (zl + zh) / 2, t):
+                    start = t.floor("5min")
+                    w = {"dir": d, "zl": zl, "zh": zh, "strength": z["s"], "names": z["names"], "atr": A["atr"],
+                         "zones": A["zones"], "start": start.isoformat(),
+                         "expires": (start + pd.Timedelta(hours=C.WATCH_HOURS)).isoformat(),
+                         "context": A["context"], "via": "1m", "touch": t.isoformat()}
+                    S.setdefault("watched", []).append([(zl + zh) / 2, t.isoformat()])
+                    S["watch"] = w
+                    out.append(("WATCH", w))
+                    break
+    if A:
+        for z in A["cands"]:
+            if c > z["zh"]:
+                z["side"] = 1
+            elif c < z["zl"]:
+                z["side"] = -1
+    if w is None:
+        return out
+
+    if t >= pd.Timestamp(w["expires"]):
+        S["watch"] = None
+        return out + [("WATCH_END", w)]
+    if ran_away(w, c):
+        S["watch"] = None
+        return out + [("WATCH_END", w)]
+    if t < pd.Timestamp(w["start"]):
+        return out
+    hit = None
+    if C.HELPER_1M:
+        hit = trigger_bar(o, h, l, c, pc, t, w, "1m")
+    if hit is None and bar5 is not None and pd.Timestamp(bar5.name) >= pd.Timestamp(w["start"]):
+        hit = trigger_bar(*(float(bar5[x]) for x in ("open", "high", "low", "close")), pc5, bar5.name, w, "5m")
+    if hit:
+        S["watch"] = None
+        S["t5"] = hit
+        out.append(("ENTRY", (hit, w)))
+    return out
+
+
+def to_5m(b1: pd.DataFrame) -> pd.DataFrame:
+    return b1.resample("5min", label="left", closed="left").agg(
+        {"open": "first", "high": "max", "low": "min", "close": "last"}).dropna()
+
+
+def feed(S: dict, b1: pd.DataFrame, after=None, until=None):
+    """Run on_bar over closed 1m candles with after < t (< until). Yields (t, events)."""
+    b5 = to_5m(b1)
+    pos5 = {t: k for k, t in enumerate(b5.index)}
+    idx = b1.index
+    for k in range(1, len(b1)):
+        t = idx[k]
+        if after is not None and t <= after:
+            continue
+        if until is not None and t >= until:
+            break
+        bar5 = pc5 = None
+        if (t + pd.Timedelta(minutes=1)).minute % 5 == 0:
+            s5 = (t - pd.Timedelta(minutes=4))
+            k5 = pos5.get(s5)
+            if k5 is not None and k5 > 0:
+                bar5, pc5 = b5.iloc[k5], float(b5["close"].iloc[k5 - 1])
+        yield t, on_bar(S, t, b1.iloc[k], float(b1["close"].iloc[k - 1]), bar5, pc5)

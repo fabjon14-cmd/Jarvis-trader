@@ -19,9 +19,11 @@ for name, sym, n, iv in (("xau_1m", "XAU/USD", 5000, "1min"), ("xau_5m", "XAU/US
             break
         except Exception as exc:
             print(name, "retry after:", exc)
+            print(f"::warning::{name}: {exc}")
             time.sleep(65)
     else:
-        raise SystemExit(f"{name}: gave up")
+        print(f"::error::{name}: gave up")
+        continue
     time.sleep(15)
     df.to_csv(out / f"{name}.csv")
     print(name, len(df), df.index[0], "->", df.index[-1])

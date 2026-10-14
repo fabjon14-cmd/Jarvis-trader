@@ -20,14 +20,14 @@ jobs:
       - name: Fetch candles
         env:
           TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
-        run: python3 gold-signals/dump_data.py /tmp/gold-data
+        run: python3 gold-signals/dump_data.py /tmp/gold-data 2>&1 | tee /tmp/dump.log; grep -h "Error\|error" /tmp/dump.log | head -5 | sed "s/^/::warning::/"
       - name: Push to gold-data branch
         run: |
           git config user.name "gold-signals-bot"
           git config user.email "actions@users.noreply.github.com"
           git checkout --orphan gold-data
           git rm -rq --cached .
-          cp /tmp/gold-data/*.csv .
+          cp /tmp/gold-data/*.csv . || true
           git add *.csv
           git commit -qm "Gold data snapshot $(date -u +'%Y-%m-%d %H:%M UTC')"
           git push -f origin gold-data

@@ -39,8 +39,11 @@ def p1(x):
     return f"{x:.1f}"
 
 
+BAR_MIN = 30          # candle length of the signals being emailed (1 while sending 1m scalp signals)
+
+
 def uk_time(ts, close=True):
-    t = ts + timedelta(minutes=30) if close else ts
+    t = ts + timedelta(minutes=BAR_MIN) if close else ts
     return t.tz_convert(UK).strftime("%a %d %b %H:%M")
 
 
@@ -79,16 +82,18 @@ def signal_email(ev, source):
     ctx = I["context"]
     kind_zone = "H4 " + ("support" if d > 0 else "resistance") if I.get("htf", True) else ("support" if d > 0 else "resistance")
     srcs = ", ".join(n for n in I["names"] if n != "round number") or "round number"
+    tf = I.get("tf", "30m")
+    big = "15m" if tf == "1m" else "H4"
 
-    subj = (f"GOLD {S} ({I['grade']}, {I['score']:.0f}/100) · Zone {p1(I['zl'])}-{p1(I['zh'])} · "
+    subj = (f"GOLD {tf + ' ' if tf != '30m' else ''}{S} ({I['grade']}, {I['score']:.0f}/100) · Zone {p1(I['zl'])}-{p1(I['zh'])} · "
             f"SL {p1(T.sl0)} · TP1 {T.tp1:.0f} / TP2 {T.tp2:.0f}")
 
     L = []
-    L.append(f"NEW SIGNAL: {S} {C.SYMBOL_LABEL} — {uk_time(ev.time)} (UK)")
+    L.append(f"NEW {tf + ' ' if tf != '30m' else ''}SIGNAL: {S} {C.SYMBOL_LABEL} — {uk_time(ev.time)} (UK)")
     L.append("")
     L.append("ENTRY")
     L.append(f"  Entry zone:   {p1(I['zl'])} – {p1(I['zh'])}  ({kind_zone}: {srcs})")
-    L.append(f"  Signal price: {p(T.entry)} (30m candle close)")
+    L.append(f"  Signal price: {p(T.entry)} ({tf} candle close)" + (f" · price now {p(I['price_now'])}" if I.get("price_now") else ""))
     L.append(f"  Stop loss:    {p(T.sl0)}  ({'below' if d > 0 else 'above'} the zone + buffer) · risk {p1(I['risk'])}")
     L.append(f"  TP1:          {p(T.tp1)}  ({T.rr1:.1f}R) → close {C.PARTIAL_PCT:g}%, then lock/BE")
     L.append(f"  TP2:          {p(T.tp2)}  ({T.rr2:.1f}R) → next major {'resistance' if d > 0 else 'support'} zone")
@@ -107,7 +112,7 @@ def signal_email(ev, source):
     L.append("WHY THIS TRADE")
     L.append(f"  ✔ Price at {kind_zone} {p1(I['zl'])}–{p1(I['zh'])} (strength {I['zstr']:.0f}, {zone_label(I['zstr'])}; {I['fresh']})")
     wick_pct = I["rej"] * 100
-    L.append(f"  ✔ 30m {I['kind']} — {wick_pct:.0f}% of the candle, closed back {'above' if d > 0 else 'below'} the zone edge")
+    L.append(f"  ✔ {tf} {I['kind']} — {wick_pct:.0f}% of the candle, closed back {'above' if d > 0 else 'below'} the zone edge")
     if I["swept"]:
         L.append(f"  ✔ Liquidity sweep: wicked through {I['swept']} and reclaimed it")
     else:
@@ -130,7 +135,7 @@ def signal_email(ev, source):
         L.append("  • Dollar / silver check unavailable on this data feed")
     if I.get("vr"):
         L.append(f"  {tick(I['vr'] >= C.VOL_SPIKE)} Volume {I['vr']:.1f}x average on the signal candle")
-    L.append(f"  ✔ No falling-knife: last {C.KNIFE_BARS} candles moved {I['knife']:.1f} ATR (limit {C.KNIFE_ATR:g})")
+    L.append(f"  ✔ Knife filter passed: no sharp {'drop' if d > 0 else 'rise'} into the zone in the last {C.KNIFE_BARS} candles")
     if I["mom"]:
         good = "fading" in I["mom"]
         L.append(f"  {tick(good)} Momentum: {I['mom']}")
@@ -147,7 +152,7 @@ def signal_email(ev, source):
     L.append("")
 
     L.append("WHAT WOULD CANCEL IT")
-    L.append(f"  • A 30m close {'below' if d > 0 else 'above'} {p(T.sl0)} (SL), or an H4 close {'below' if d > 0 else 'above'} "
+    L.append(f"  • A {tf} close {'below' if d > 0 else 'above'} {p(T.sl0)} (SL), or a {big} close {'below' if d > 0 else 'above'} "
              f"{p1(I['zl'] if d > 0 else I['zh'])} = zone broken")
     L.append("  • If price runs to TP1 without you in, don't chase")
     L.append("")
@@ -161,6 +166,10 @@ def signal_email(ev, source):
         L.append(f"  2. At {C.LOCK_TRIG:g}% of the way to TP1 (≈{p1(trig)}) the stop moves to {p1(lock_px)} (locked profit)")
     L.append(f"  3. At TP1: close {C.PARTIAL_PCT:g}%, stop to break-even or better")
     L.append(f"  4. Let the rest run to TP2 {p(T.tp2)}")
+    if tf == "1m":
+        L.append("  1m alert: emails run every ~5 min, so check the live price first — if it is already well past the")
+        L.append("  entry or near TP1, skip it rather than chase." + ("" if C.SCALP_FOLLOWUPS else
+                 " No lock / TP1 / close emails for 1m trades — set the stop and targets when you enter."))
     L.append("")
     L.append(f"Data: {source}. Signals only — no orders are placed. Not financial advice.")
     return subj, "\n".join(L)
@@ -169,7 +178,7 @@ def signal_email(ev, source):
 # ---------------------------------------------------------------- follow-ups
 def follow_email(ev, tally):
     T, I = ev.trade, ev.info
-    S = side(T.dir)
+    S = (T.tf + " " if getattr(T, "tf", "30m") != "30m" else "") + side(T.dir)
     head = f"{S} from {p(T.entry)} (signal {uk_time(T.time)})"
     if ev.kind == "LOCK":
         subj = f"GOLD {S} · LOCK · move SL to {p1(I['new_sl'])}"

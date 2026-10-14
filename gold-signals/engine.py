@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from zoneinfo import ZoneInfo
 
+from types import SimpleNamespace
+
 import numpy as np
 import pandas as pd
 
@@ -126,8 +128,8 @@ def structure(h, l, c, s):
 def bucket_keys(times: pd.DatetimeIndex, tf: str) -> np.ndarray:
     """Bucket start for each 30m open time. Day / 4h / week roll at 17:00 New York."""
     ny = times.tz_convert(NY).tz_localize(None) + pd.Timedelta(hours=7)   # 17:00 NY -> 00:00
-    if tf == "1h":
-        k = times.tz_convert("UTC").floor("1h").tz_localize(None)
+    if tf in ("5m", "15m", "1h"):
+        k = times.tz_convert("UTC").floor({"5m": "5min", "15m": "15min", "1h": "1h"}[tf]).tz_localize(None)
     elif tf == "4h":
         k = ny.floor("4h")
     elif tf == "D":
@@ -147,9 +149,19 @@ class HTF:
     c: np.ndarray
     first: np.ndarray        # index of first 30m bar in each htf bar
     of_bar: np.ndarray       # htf bar index for each 30m bar
+    src_first: np.ndarray | None = None   # (mapped HTFs) first source candle of each htf bar - for time order
 
 
-def make_htf(df: pd.DataFrame, tf: str) -> HTF:
+def make_htf(df: pd.DataFrame, tf: str, base: pd.DatetimeIndex | None = None) -> HTF:
+    """Higher-timeframe candles built from df. With base: df is a longer, coarser history
+    (30m) and the result is mapped onto the base candle index (e.g. 1m)."""
+    if base is not None:
+        H = make_htf(df, tf)
+        hk = bucket_keys(df.index, tf)[H.first]
+        bk = bucket_keys(base, tf)
+        of_bar = np.searchsorted(hk, bk, side="left")        # missing current bucket -> len (prev = last complete)
+        first = np.searchsorted(bk, hk, side="left")          # htf buckets before the base window -> 0
+        return HTF(H.o, H.h, H.l, H.c, first, of_bar, H.first)
     keys = bucket_keys(df.index, tf)
     change = np.concatenate([[True], keys[1:] != keys[:-1]])
     bid = np.cumsum(change) - 1
@@ -192,6 +204,7 @@ class Trade:
     grade: str = ""
     score: float = 0.0
     id: str = ""
+    tf: str = "30m"
 
 
 @dataclass
@@ -210,8 +223,14 @@ class Event:
 # ----------------------------------------------------------------------------
 # the engine
 # ----------------------------------------------------------------------------
+PROFILE_KEYS = {"MIN_LEVEL_STR": 4.0, "SWEEP_MAX_ATR": 0.7, "SWEEP_MIN_ATR": 0.05, "SL_BUF_ATR": 0.1, "MIN_RISK_ATR": 0.3,
+                "MAX_RISK_ATR": 1.5, "MIN_RR": 1.5, "COOLDOWN_MIN": 120, "REQUIRE_HTF_ZONE": True, "REQUIRE_30M_AGREE": True,
+                "NEED_TREND": True, "ATR_TF": "1h", "TREND_TF": "4h", "BASE_LABEL": "30m", "ID_PREFIX": ""}
+
+
 class Engine:
-    def __init__(self, df: pd.DataFrame, dollar: pd.Series | None = None, silver: pd.Series | None = None):
+    def __init__(self, df: pd.DataFrame, dollar: pd.Series | None = None, silver: pd.Series | None = None,
+                 htf_df: pd.DataFrame | None = None, profile: dict | None = None):
         """df: 30m candles indexed by UTC open time (tz-aware), columns open/high/low/close[/volume].
         dollar: optional EUR/USD 30m closes (dollar direction = opposite), silver: XAG/USD 30m closes."""
         self.df = df
@@ -224,20 +243,33 @@ class Engine:
         self.n = len(df)
         self.has_vol = np.nansum(self.v) > 0
 
-        # higher timeframes
-        self.H1 = make_htf(df, "1h")
-        self.H4 = make_htf(df, "4h")
-        self.D = make_htf(df, "D")
-        self.W = make_htf(df, "W")
+        # mode settings (default: the 30m "Day" mode from config; profile overrides, e.g. 1m Scalp)
+        self.p = SimpleNamespace(**{k: getattr(C, k, v) for k, v in PROFILE_KEYS.items()})
+        for k, v in (profile or {}).items():
+            setattr(self.p, k, v)
 
-        # ATR (1h, previous completed bar), chart ATR
-        self.atr1h = atr(self.H1.h, self.H1.l, self.H1.c, 14)
+        # higher timeframes (from htf_df when given: longer 30m history mapped onto these candles)
+        base = df.index if htf_df is not None else None
+        src = htf_df if htf_df is not None else df
+        self.H1 = make_htf(src, "1h", base)
+        self.H4 = make_htf(src, "4h", base)
+        self.D = make_htf(src, "D", base)
+        self.W = make_htf(src, "W", base)
+        dk = bucket_keys(df.index, "D")
+        chg = np.concatenate([[True], dk[1:] != dk[:-1]])
+        self.d0 = np.maximum.accumulate(np.where(chg, np.arange(len(df)), 0))   # first candle of today
+
+        # ATR (previous completed ATR_TF bar), chart ATR
+        self.HA = self.H1 if self.p.ATR_TF == "1h" else make_htf(df, self.p.ATR_TF)
+        self.atr1h = atr(self.HA.h, self.HA.l, self.HA.c, 14)
         self.catr = atr(self.h, self.l, self.c, 14)
 
-        # trend: 4h structure, EMA fallback
+        # trend: TREND_TF structure (4h by default), EMA fallback
         self.st4, self.ev4, self.lv4 = structure(self.H4.h, self.H4.l, self.H4.c, C.STRUCT_LEN)
-        self.ema20_4 = ema(self.H4.c, 20)
-        self.ema50_4 = ema(self.H4.c, 50)
+        self.HT = self.H4 if self.p.TREND_TF == "4h" else make_htf(df, self.p.TREND_TF)
+        self.stT, self.evT, self.lvT = structure(self.HT.h, self.HT.l, self.HT.c, C.STRUCT_LEN)
+        self.ema20_4 = ema(self.HT.c, 20)
+        self.ema50_4 = ema(self.HT.c, 50)
         self.stD, self.evD, self.lvD = structure(self.D.h, self.D.l, self.D.c, C.STRUCT_LEN)
         self.st1, self.ev1, self.lv1 = structure(self.H1.h, self.H1.l, self.H1.c, C.STRUCT_LEN)
         self.st30, self.ev30, self.lv30 = structure(self.h, self.l, self.c, C.STRUCT_LEN)
@@ -255,6 +287,20 @@ class Engine:
                 k = j + s + 1
                 if k < len(H.first):
                     self.pivot_feed.setdefault(int(H.first[k]), []).append((H.l[j], w, ishtf, nm + " low"))
+        if htf_df is not None and 0 in self.pivot_feed:
+            # pivots from before these candles all arrive on candle 0: keep them in time order so the
+            # 400-level cap drops the oldest, not the H4 ones
+            order = []
+            for H, s, nm in ((self.H4, 2, "H4 swing"), (self.H1, 3, "H1 swing")):
+                ph, pl = pivots(H.h, H.l, s)
+                for j in list(ph) + list(pl):
+                    k = j + s + 1
+                    if k < len(H.first) and H.first[k] == 0:
+                        order.append((src.index[H.src_first[k]], (H.h[j] if j in set(ph) else H.l[j])))
+            t_of = {}
+            for tt, px in order:
+                t_of.setdefault(px, tt)
+            self.pivot_feed[0].sort(key=lambda lv: t_of.get(lv[0], src.index[0]))
 
         # momentum
         self.rsi = rsi(self.c, C.RSI_LEN)
@@ -332,17 +378,17 @@ class Engine:
         return int(H.of_bar[i]) - 1
 
     def atr_at(self, i):
-        k = self.htf_prev(self.H1, i)
+        k = self.htf_prev(self.HA, i)
         return self.atr1h[k] if k >= 0 else np.nan
 
     def trend_at(self, i):
-        k = self.htf_prev(self.H4, i)
+        k = self.htf_prev(self.HT, i)
         if k < 0:
             return 0
-        s = int(self.st4[k])
+        s = int(self.stT[k])
         if s != 0:
             return s
-        f, sl, cc = self.ema20_4[k], self.ema50_4[k], self.H4.c[k]
+        f, sl, cc = self.ema20_4[k], self.ema50_4[k], self.HT.c[k]
         return 1 if (f > sl and cc > sl) else -1 if (f < sl and cc < sl) else 0
 
     def htf_struct(self, H: HTF, st, ev, lv, i):
@@ -387,7 +433,7 @@ class Engine:
         if wk >= 0:
             L += [(self.W.h[wk], 3.0, True, "last week's high"), (self.W.l[wk], 3.0, True, "last week's low")]
         # today so far (including this candle)
-        d0 = int(self.D.first[self.D.of_bar[i]])
+        d0 = int(self.d0[i])
         L += [(self.h[d0:i + 1].max(), 2.0, False, "today's high"), (self.l[d0:i + 1].min(), 2.0, False, "today's low")]
         for v, w, nm in ((self.asH[i], 2.5, "Asian high"), (self.asL[i], 2.5, "Asian low"),
                          (self.lonO[i], 1.5, "London open"), (self.nyO[i], 1.5, "NY open")):
@@ -447,7 +493,7 @@ class Engine:
 
     def recent(self, p, i):
         t = self.t[i]
-        return any(abs(sp - p) <= C.CLUSTER_DIST and (t - st) < timedelta(minutes=C.COOLDOWN_MIN) for sp, st in self.sig)
+        return any(abs(sp - p) <= C.CLUSTER_DIST and (t - st) < timedelta(minutes=self.p.COOLDOWN_MIN) for sp, st in self.sig)
 
     def targets(self, Z, entry, d, risk, a):
         a = a if a and a > 0 else risk
@@ -539,7 +585,7 @@ class Engine:
             pools += [(self.W.l[wk], "last week's low"), (self.W.h[wk], "last week's high")]
         pools += [(self.asL[i], "Asian low"), (self.asH[i], "Asian high")]
         pools += self._swing_pools(i)
-        pen = C.SWEEP_MIN_ATR * (a if a and not np.isnan(a) else self.catr[i])
+        pen = self.p.SWEEP_MIN_ATR * (a if a and not np.isnan(a) else self.catr[i])
         sl = ss = ""
         for L, nm in pools:
             if L is None or np.isnan(L):
@@ -656,7 +702,7 @@ class Engine:
             return
         pad = C.CLUSTER_DIST * 0.15
         for z in Z:
-            if z.s < C.MIN_LEVEL_STR:
+            if z.s < self.p.MIN_LEVEL_STR:
                 continue
             bl, bh = z.lo - pad, z.hi + pad
             up = self.c[i] > bh and self.c[i - 1] <= bh
@@ -686,10 +732,10 @@ class Engine:
         rng = h - l
         lw = min(o, c) - l
         uw = h - max(o, c)
-        sMax = C.SWEEP_MAX_ATR * a
-        buf = C.SL_BUF_ATR * a
-        minR = C.MIN_RISK_ATR * a
-        maxR = C.MAX_RISK_ATR * a
+        sMax = self.p.SWEEP_MAX_ATR * a
+        buf = self.p.SL_BUF_ATR * a
+        minR = self.p.MIN_RISK_ATR * a
+        maxR = self.p.MAX_RISK_ATR * a
         trend = self.trend_at(i)
         st30 = int(self.st30[i])
         kDn, kUp, kMove = self.knife(i)
@@ -705,17 +751,17 @@ class Engine:
             risk = (c - sl) * d
             if risk < minR or risk > maxR:
                 return
-            if trend == -d:
+            if self.p.NEED_TREND and trend == -d:
                 return
             if (d > 0 and kDn) or (d < 0 and kUp):
                 return
-            if C.REQUIRE_HTF_ZONE and not zhtf:
+            if self.p.REQUIRE_HTF_ZONE and not zhtf:
                 return
-            if C.REQUIRE_30M_AGREE and st30 != d:
+            if self.p.REQUIRE_30M_AGREE and st30 != d:
                 return
             tp1, tp2 = self.targets(Z, c, d, risk, a)
             rr1, rr2 = abs(tp1 - c) / risk, abs(tp2 - c) / risk
-            if rr2 < C.MIN_RR:
+            if rr2 < self.p.MIN_RR:
                 return
             dS = -dDir * d if dOK else 0      # stronger dollar = weaker gold
             sS = sDir * d if sOK else 0
@@ -737,7 +783,7 @@ class Engine:
 
         # SETUP 1: bounce off a zone that already held its role
         for z in Z:
-            if z.s < C.MIN_LEVEL_STR or self.recent(z.p, i):
+            if z.s < self.p.MIN_LEVEL_STR or self.recent(z.p, i):
                 continue
             zp = C.CLUSTER_DIST * 0.15
             zl, zh = z.lo - zp, z.hi + zp
@@ -793,13 +839,14 @@ class Engine:
             return
         g = "A" if best["score"] >= 75 else "B" if best["score"] >= 62 else "C"
         T = Trade(best["dir"], c, best["sl"], best["sl"], best["tp1"], best["tp2"], best["rr1"], best["rr2"], i, self.t[i],
-                  best["zl"], best["zh"], grade=g, score=best["score"])
-        T.id = f"{'B' if T.dir > 0 else 'S'}{self.t[i].strftime('%Y%m%d%H%M')}"
+                  best["zl"], best["zh"], grade=g, score=best["score"], tf=self.p.BASE_LABEL)
+        T.id = f"{self.p.ID_PREFIX}{'B' if T.dir > 0 else 'S'}{self.t[i].strftime('%Y%m%d%H%M')}"
         self.trade = T
         self.sig.append((best["level"], self.t[i]))
         self.sig = self.sig[-64:]
         info = dict(best)
         info["grade"] = g
+        info["tf"] = self.p.BASE_LABEL
         info["context"] = self.context(i)
         self.events.append(Event("SIGNAL", i, self.t[i], T, info))
 
@@ -814,10 +861,15 @@ class Engine:
             if self.ev30[j]:
                 last30 = f"{'CHoCH' if self.ev30[j] == 2 else 'BOS'} {'up' if self.st30[j] > 0 else 'down'} at {self.lv30[j]:.2f}"
                 break
+        rows = [("Daily  (big picture)", sD, lD), ("H4     (main trend)" if self.p.TREND_TF == "4h" else "H4", s4, l4),
+                ("1H", s1, l1)]
+        if self.p.TREND_TF != "4h":
+            sT, lT = self.htf_struct(self.HT, self.stT, self.evT, self.lvT, i)
+            rows.append((f"{self.p.TREND_TF:<6} (main trend)", sT, lT))
+        rows.append((f"{self.p.BASE_LABEL:<6} (signal chart)", s30, last30))
         return {
             "trend4h_used": self.trend_at(i),
-            "rows": [("Daily  (big picture)", sD, lD), ("H4     (main trend)", s4, l4),
-                     ("1H", s1, l1), ("30m    (signal chart)", s30, last30)],
+            "rows": rows,
             "vwap": self.vwap[i],
             "rsi": self.rsi[i],
             "atr": self.atr_at(i),
@@ -825,7 +877,7 @@ class Engine:
         }
 
     def nearest_zones(self, i):
-        Z = [z for z in self.zones(i) if z.s >= C.MIN_LEVEL_STR]
+        Z = [z for z in self.zones(i) if z.s >= self.p.MIN_LEVEL_STR]
         c = self.c[i]
         below = [z for z in Z if z.hi < c]
         above = [z for z in Z if z.lo > c]
